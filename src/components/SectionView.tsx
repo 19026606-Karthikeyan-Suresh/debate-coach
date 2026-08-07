@@ -6,6 +6,7 @@
  * "(OR)" fork the whip will actually say — because none of those are text boxes.
  */
 
+import type { Finding } from '../analysis/index.ts'
 import type { BlockId, SpeakerRole } from '../formats/index.ts'
 import { requiresExtension } from '../formats/index.ts'
 import type { CaseSection } from '../case/sections.ts'
@@ -41,6 +42,8 @@ export interface SectionViewProps {
   readonly section: CaseSection
   readonly caseFile: Case
   readonly role: SpeakerRole
+  /** Analyzer findings for the whole seat, keyed by field path. */
+  readonly findingsByPath: ReadonlyMap<string, readonly Finding[]>
   /** Applies an edit against the newest document. */
   readonly update: (mutate: (current: Case) => Case) => void
 }
@@ -60,6 +63,7 @@ const REPEATABLE_NOUNS: Partial<Record<BlockId, string>> = {
  * @param props.section - The section to render.
  * @param props.caseFile - The whole case, needed for structural state the fields do not carry.
  * @param props.role - The seat, which decides whether extension controls appear.
+ * @param props.findingsByPath - Analyzer findings, keyed by field path.
  * @param props.update - Applies an edit against the newest document.
  * @returns The section.
  */
@@ -67,6 +71,7 @@ export function SectionView({
   section,
   caseFile,
   role,
+  findingsByPath,
   update,
 }: SectionViewProps): React.JSX.Element {
   const onChange = (path: string, value: string): void => {
@@ -115,6 +120,7 @@ export function SectionView({
             <TemplateTable
               group={group}
               onChange={onChange}
+              findingsByPath={findingsByPath}
               skipPaths={[MECHANISM_PATH]}
               controls={
                 <GroupControls

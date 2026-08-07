@@ -47,11 +47,57 @@ body {
   }
 
   .field-input {
-    @apply mt-1.5 w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm
-      text-neutral-900 outline-none placeholder:text-neutral-400
+    /* `block` rather than the default inline-block: an inline textarea sits on a line box and
+       carries a few pixels of descender space under it, which makes the wrapper taller than the
+       box and leaves the underlay's background showing below the border. */
+    @apply mt-1.5 block w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2
+      text-sm text-neutral-900 outline-none placeholder:text-neutral-400
       focus:border-neutral-500 focus:ring-2 focus:ring-neutral-900/10
       dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100
       dark:focus:border-neutral-500 dark:focus:ring-neutral-100/10;
+    /* Browsers give a textarea its own font rather than inheriting one, and the analyzer's
+       underline layer is a plain div. Without this the two lay their text out differently and
+       every underline sits under the wrong word. */
+    font-family: inherit;
+    /* Reserve the scrollbar's width whether or not it is showing, for the same reason: a
+       scrollbar appearing on the textarea and not on the layer behind it rewraps every line. */
+    scrollbar-gutter: stable;
+  }
+
+  /* A textarea and the transparent copy of its text that carries the analyzer's underlines.
+     Every property below that affects text layout is duplicated from .field-input deliberately —
+     padding, border width, font size, line height and wrapping all have to agree exactly. */
+  .field-stack {
+    @apply relative mt-1.5;
+  }
+
+  .field-underlay {
+    @apply pointer-events-none absolute inset-0 overflow-hidden rounded-md border
+      border-transparent bg-white px-3 py-2 text-sm whitespace-pre-wrap text-transparent
+      dark:bg-neutral-950;
+    font-family: inherit;
+    scrollbar-gutter: stable;
+    /* The browser gives a textarea this and a div `normal`, so without it a long unbroken
+       string — a pasted URL — wraps in the box and overflows the layer behind it. */
+    overflow-wrap: break-word;
+  }
+
+  /* <mark> defaults to a yellow block; only the underline should be visible. */
+  .depth-mark {
+    @apply bg-transparent text-transparent underline decoration-wavy underline-offset-4;
+    text-decoration-thickness: 1px;
+  }
+
+  .depth-mark-critical {
+    @apply decoration-red-500;
+  }
+
+  .depth-mark-warn {
+    @apply decoration-amber-500;
+  }
+
+  .depth-mark-info {
+    @apply decoration-neutral-400;
   }
 
   .btn {
