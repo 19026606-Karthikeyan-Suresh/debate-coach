@@ -14,12 +14,16 @@ import type {
   ClashEngagement,
   DefinitionBlock,
   EngagementResponse,
+  ExtensionBlock,
+  HandledArgument,
   OpposingRebuttalBlock,
   OurArgumentEngagement,
   OverlapEngagement,
   PolicyBlock,
+  PointOfInformation,
   PolicyRebuttalBlock,
   PrepBlock,
+  Preempt,
   RebuttalBlock,
   SetupBlock,
   Substantive,
@@ -93,6 +97,26 @@ export function createSubstantive(): Substantive {
     link: '',
     preempts: [],
   }
+}
+
+/** Builds an unanswered point of information with a fresh id. */
+export function createPointOfInformation(): PointOfInformation {
+  return { id: newId(), text: '', response: '' }
+}
+
+/**
+ * Builds an empty preempt with a fresh id.
+ *
+ * @param source - Who produced the attack. Defaults to `manual`; only phase 7's `attack`
+ *   call passes `claude`, and the depth panel treats the two differently.
+ */
+export function createPreempt(source: Preempt['source'] = 'manual'): Preempt {
+  return { id: newId(), attack: '', response: '', source }
+}
+
+/** Builds an empty extension block. Only BP closing-half seats ever get one. */
+export function createExtensionBlock(): ExtensionBlock {
+  return { statement: '', whyNew: '', whyItMatters: '' }
 }
 
 /** Builds an empty POLICY REBUTTAL block. */
@@ -202,6 +226,16 @@ export function createOverlapEngagement(): OverlapEngagement {
 }
 
 /**
+ * Builds one slot of a clash's signposting line.
+ *
+ * @param side - Whose argument this slot handles. The template prints it as "( Prop/ Opp)",
+ *   so passing our own side is legal — a whip does defend their own bench's arguments.
+ */
+export function createHandledArgument(side: Side): HandledArgument {
+  return { id: newId(), side, topic: '' }
+}
+
+/**
  * Builds an empty clash.
  *
  * @param engagements - Engagements to seed. Defaults to empty; the case builder adds them as
@@ -247,5 +281,54 @@ export function createEmptyCase(format: FormatId, side: Side, position: string):
     rebuttals: [],
     opposingRebuttals: [],
     clashes: [createClash(), createClash()],
+    extension: null,
+  }
+}
+
+/**
+ * Fills in blocks a stored case is missing.
+ *
+ * A case is persisted as one JSON blob, so a document written before a block existed parses
+ * into a `Case` with that key absent — and `strict` TypeScript will not have caught it,
+ * because the parse is a cast. This runs on every load and on every `.dbcase` import.
+ *
+ * Only absent keys are replaced. A field the user deliberately emptied stays empty, and
+ * `policy`/`extension` stay null when they are explicitly null rather than missing.
+ *
+ * @param stored - Parsed JSON from the `doc` column or an import. Anything that is not an
+ *   object throws, because a corrupt row should surface rather than open as a blank case.
+ * @returns A case with every block present.
+ * @throws If `stored` is null or not an object.
+ */
+export function hydrateCase(stored: unknown): Case {
+  if (typeof stored !== 'object' || stored === null) {
+    throw new Error('Stored case is not an object')
+  }
+  const partial = stored as Partial<Case>
+  const now = new Date().toISOString()
+  // Spread only merges one level, so the two nested groups are rebuilt explicitly — a stored
+  // `fiveW1H` missing `where` would otherwise land as undefined and read as a crash, not a gap.
+  const prep = { ...createPrepBlock(), ...partial.prep }
+  const setup = { ...createSetupBlock(), ...partial.setup }
+
+  return {
+    id: partial.id ?? newId(),
+    createdAt: partial.createdAt ?? now,
+    updatedAt: partial.updatedAt ?? now,
+    format: partial.format ?? 'AP',
+    side: partial.side ?? 'gov',
+    position: partial.position ?? '',
+    visibility: partial.visibility ?? 'private',
+    prep: { ...prep, fiveW1H: { ...createPrepBlock().fiveW1H, ...prep.fiveW1H } },
+    setup: { ...setup, caseDivision: { ...createSetupBlock().caseDivision, ...setup.caseDivision } },
+    definition: { ...createDefinitionBlock(), ...partial.definition },
+    // `null` is a real answer here ("no mechanism"), so only `undefined` gets a fresh block.
+    policy: partial.policy === undefined ? createPolicyBlock() : partial.policy,
+    substantives: partial.substantives ?? [],
+    policyRebuttal: { ...createPolicyRebuttalBlock(), ...partial.policyRebuttal },
+    rebuttals: partial.rebuttals ?? [],
+    opposingRebuttals: partial.opposingRebuttals ?? [],
+    clashes: partial.clashes ?? [],
+    extension: partial.extension ?? null,
   }
 }

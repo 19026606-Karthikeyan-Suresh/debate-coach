@@ -10,6 +10,7 @@ import Database from '@tauri-apps/plugin-sql'
 
 import type { FormatId, Side } from '../formats/index.ts'
 import type { Case, Visibility } from '../types/case.ts'
+import { hydrateCase } from '../types/createCase.ts'
 
 /** Must match `DB_URL` in `src-tauri/src/db.rs`; the Rust side owns the migrations. */
 const DB_URL = 'sqlite:debate-coach.db'
@@ -90,6 +91,9 @@ export async function saveCase(caseFile: Case): Promise<void> {
 /**
  * Loads one case.
  *
+ * Runs the document through `hydrateCase`, so a row written before a block existed opens
+ * with that block empty rather than undefined.
+ *
  * @param caseId - Primary key. An unknown id returns null rather than throwing, because the
  *   common cause is a stale link to a case deleted on another machine.
  * @returns The parsed case, or null if no row matches.
@@ -98,7 +102,7 @@ export async function loadCase(caseId: string): Promise<Case | null> {
   const database = await getDatabase()
   const rows = await database.select<CaseRow[]>('SELECT doc FROM cases WHERE id = $1', [caseId])
   const row = rows[0]
-  return row ? (JSON.parse(row.doc) as Case) : null
+  return row ? hydrateCase(JSON.parse(row.doc)) : null
 }
 
 /**
