@@ -1,0 +1,25 @@
+@import 'tailwindcss';
+
+/* The app is a prep tool used in bright tournament rooms and dark hotel lobbies alike;
+   both themes ship from day one rather than being retrofitted. */
+@theme {
+  --color-gov: oklch(0.55 0.15 250);
+  --color-opp: oklch(0.55 0.16 25);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* Cases are read at a glance under time pressure — system UI font keeps it legible
+     without waiting on a webfont that would not load offline anyway. */
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+}

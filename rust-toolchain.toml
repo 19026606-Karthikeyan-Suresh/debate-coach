@@ -1,12 +1,12 @@
 # Pins the Rust toolchain so every machine compiles the Tauri shell identically.
 # rustup reads this automatically — no manual `rustup override` needed.
 #
-# TODO: replace "stable" with the exact version once rustup is installed.
-# Run `rustc --version` and set e.g. channel = "1.86.0". Floating on "stable"
-# means a teammate cloning six months from now gets a different compiler.
+# Pinned at phase 1 from the machine that scaffolded the app (rustc 1.97.1, released 2026-07-14).
+# Bump deliberately, not incidentally: clippy gains lints between releases and CI fails on
+# warnings, so a floating channel turns an unrelated commit red.
 
 [toolchain]
-channel = "stable"
+channel = "1.97.1"
 components = ["rustfmt", "clippy"]
 targets = ["x86_64-pc-windows-msvc"]
 profile = "default"

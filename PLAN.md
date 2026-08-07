@@ -104,7 +104,10 @@ interface Substantive {          // the 9 rows from SUBSTANTIVE STRUCTURE
 interface Case {
   id, createdAt, updatedAt, format, side, position, visibility
   prep: { motion, actorsSplit, fiveW1H, needsMechanism, scratch, pois }
-  setup: { characterisation, burdens, policy, stance, caseDivision }
+  setup: { characterisation, burdens, policy, stance,
+           oppositionRebuttals,        // "Rebuttals (if opp 1)" — sits in CASE SET-UP,
+                                       // separate from the REBUTTAL table
+           caseDivision }
   definition: DefinitionBlock          // 4 rows
   policy: PolicyBlock | null           // 5 rows
   substantives: Substantive[]
