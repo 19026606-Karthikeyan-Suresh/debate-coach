@@ -1,11 +1,14 @@
 # Tooling only. The app itself is TypeScript + Rust and needs none of this.
 # Install:  .venv\Scripts\python.exe -m pip install -r requirements.txt
 
-# Reads and diffs the source .docx templates. Used by the template-fidelity agent
-# to prove every field label still matches the template question verbatim.
-python-docx==1.1.2
+# python-docx was here for the template-fidelity agent, which was never written and is
+# now retired — see the Agents section of PLAN.md. Its job, proving every field label
+# still matches the template question verbatim, is done by a hand-rolled ZIP + XML reader
+# in src/types/__tests__/readDocx.ts, which runs under vitest with everything else rather
+# than needing a second toolchain in CI. Nothing in the repo imports it. Do not re-add it
+# for phase 8's .docx export either; that path is TypeScript.
 
-# Word error rate. Used by the whisper-bench agent to compare base.en against
+# Word error rate. Used by the whisper-bench agent (phase 5) to compare base.en against
 # small.en on real recordings — the numbers that justify the two-model split.
 jiwer==3.0.4
 

@@ -397,32 +397,41 @@ Never comment what the next line already says. `// increment the counter` is noi
 
 ## Agents
 
-Nine `.claude/agents/*.md` definitions. Each is narrow enough that a cold agent with no conversation context does it well, and each maps to work that recurs across the build.
+This section originally planned nine `.claude/agents/*.md` definitions. **Phases 1–3 shipped without writing any of them**, including `analyzer-rule`, which phase 3 was supposed to be the whole use case for. That is worth recording honestly rather than quietly restating the plan, because the reason generalises to the phases still ahead.
 
-```markdown
----
-name: analyzer-rule
-description: Writes a new depth-analysis rule for src/analysis/rules/. Use when adding
-  or revising any heuristic in the analyzer table. Knows the Finding contract and the
-  requirement that every rule ships with a false-positive test.
-model: sonnet
-tools: Read, Write, Edit, Grep, Glob, Bash
----
-```
+### What the first three phases actually showed
+
+**Three of the nine were solving a problem that structure solves better.**
+
+- `template-fidelity` was going to re-extract the docx and diff it against the data model. Instead the labels are *imported* from the `*_LABELS` records rather than retyped, and `types/__tests__/template-fidelity.test.ts` diffs those records against the real `.docx` on every run. A label cannot drift without failing a test. An agent that checks when you remember to run it is strictly worse than a test that checks when you don't.
+- `doc-comment-auditor` was going to enforce the conventions above on changed files. ESLint does the mechanical half — `jsdoc/require-jsdoc`, `require-param-description`, `check-param-names`, `id-length`, `naming-convention` — and CI fails on it. What is left is the judgement half: a comment that narrates the next line, an argument description that only restates its type. That is review, and it is cheaper as part of reading the diff than as a separate pass over every changed file.
+- `analyzer-rule` was going to write one heuristic at a time against the `Finding` contract. The rules turned out to share far too much to hand out one at a time: a lexicon, a field-kind taxonomy, and a `Finding` shape that all ten pull on. Worse, two of the thresholds could only be set by watching every rule fire on one real case at once — `subOverlap`'s 0.07 and `causalChain`'s connective families were both wrong until the whole set ran against the filled example together. Ten cold agents would have re-derived the taxonomy ten times and calibrated nothing.
+
+What did survive from `analyzer-rule` is its actual content: **every rule ships with a false-positive test.** That is now a convention the tests enforce, not a brief.
+
+### The rule that came out of it
+
+**An agent pays where the work is adversarial or empirical against an interface that already exists. It loses where the work is design.**
+
+Breaking a finished pure function, measuring word error rate, and proving an RLS policy fails from a second identity are all jobs with a fixed target and a clear win condition — exactly what a cold agent with no conversation context does well. Deciding what a `Finding` is, or which template rows a judge weighs, is design: it needs the whole picture in one head, and briefing it costs more than doing it.
+
+### The five that still earn their place
+
+Each of these is downstream of an interface that will already exist when the agent runs.
 
 | Agent | Phase | Job | Model |
 |---|---|---|---|
-| **template-fidelity** | 1–2 | Guards the 1:1 mapping to the docx. Every field label must match the template question verbatim; nothing silently dropped. Re-extracts the docx and diffs against the data model. | sonnet |
-| **analyzer-rule** | 3 | Writes one heuristic rule at a time against the `Finding` contract, reusing `text.ts` and `lexicons.ts`. Each rule ships with tests including **a false-positive case** — a rule that fires on good writing is worse than no rule. | sonnet |
-| **aligner-tester** | 5 | Adversarial. Its job is to *break* `align.ts`: homophones, restarted sentences, section jumps, POI interruptions, ASR dropout, filler storms. Generates synthetic transcripts and asserts exact token classifications. | opus |
-| **whisper-bench** | 5 | Empirical. Measures live latency and word error rate for `base.en` vs `small.en` on real recordings; tunes chunk size and window overlap. Reports numbers, doesn't guess. | sonnet |
-| **rust-sidecar** | 5 | Tauri v2 specifics — `externalBin`, `bundle.resources`, capability and permission JSON, sidecar spawn, stdin piping, event channels. Version-specific and fiddly; worth isolating from app logic. | opus |
-| **prompt-guard** | 7 | Red-teams the Socratic constraint. Actively tries to make Layer B write my argument, and verifies the JSON schema plus the validator both hold. Runs on every prompt change. | opus |
+| **aligner-tester** | 5 | Adversarial. Its job is to *break* `align.ts`: homophones, restarted sentences, section jumps, POI interruptions, ASR dropout, filler storms. Generates synthetic transcripts and asserts exact token classifications. The strongest case of the nine — `align.ts` is a pure function with a fixed signature, so the whole brief is "here is the contract, break it". | opus |
+| **whisper-bench** | 5 | Empirical. Measures live latency and word error rate for `base.en` vs `small.en` on real recordings; tunes chunk size and window overlap. Reports numbers, doesn't guess. Long-running and decides nothing. | sonnet |
+| **rust-sidecar** | 5 | Tauri v2 specifics — `externalBin`, `bundle.resources`, capability and permission JSON, sidecar spawn, stdin piping, event channels. Version-specific, fiddly, and genuinely isolated from app logic. | opus |
+| **prompt-guard** | 7 | Red-teams the Socratic constraint. Actively tries to make Layer B write my argument, and verifies the JSON schema plus the validator both hold. Runs on every prompt change. Adversarial against a fixed schema. | opus |
 | **supabase-rls** | 9 | Writes migrations and *proves* the policies by attempting cross-team reads from a second identity. Security-critical and quietly easy to get wrong. Never marks a policy done without a failing-read test. | opus |
-| **crdt-sync** | 11 | Yjs document shape, the doc↔row projection, provider wiring, offline queue reconciliation, and convergence tests under partition. | opus |
-| **doc-comment-auditor** | all | Enforces the conventions above on changed files: missing docstrings, single-letter names, argument descriptions that only restate the type, comments that narrate the next line. Runs before commit. | sonnet |
 
-**Not agents.** The Case Builder UI, the script compiler, and the export path are one-off, highly interdependent, and easier to hold in one head than to brief — build those inline.
+Three of these land in phase 5, so they are worth writing *before* it rather than during.
+
+**`crdt-sync` is split rather than kept.** The Yjs document shape and the doc↔row projection are design work tangled with the data model and the editor — inline. The convergence tests under partition are adversarial against a finished provider, and that half is agent work; fold it into phase 11 as a test brief rather than an agent that owns the feature.
+
+**Still not agents.** The Case Builder UI, the script compiler, and the export path are one-off, highly interdependent, and easier to hold in one head than to brief — build those inline. Phases 1–3 confirmed it.
 
 ---
 
