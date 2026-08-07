@@ -8,14 +8,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { groupFindingsByPath } from '../analysis/index.ts'
 import { getFormat, getRole } from '../formats/index.ts'
 import { measureSections } from '../case/completeness.ts'
 import { buildSections } from '../case/sections.ts'
 import { setSeat, setVisibility } from '../case/update.ts'
+import { useAnalysis } from '../hooks/useAnalysis.ts'
 import type { SaveStatus } from '../hooks/useCaseStore.ts'
 import { useCaseStore } from '../hooks/useCaseStore.ts'
 import { usePrepTimer } from '../hooks/usePrepTimer.ts'
 import { CompletenessMeter } from './CompletenessMeter.tsx'
+import { DepthPanel } from './DepthPanel.tsx'
 import { PrepTimer } from './PrepTimer.tsx'
 import { SectionNav } from './SectionNav.tsx'
 import { SectionView } from './SectionView.tsx'
@@ -55,8 +58,26 @@ export function CaseEditor({ caseId, onClose }: CaseEditorProps): React.JSX.Elem
   )
   const completeness = useMemo(() => measureSections(sections), [sections])
 
+  const findings = useAnalysis(caseFile, role)
+  const findingsByPath = useMemo(() => groupFindingsByPath(findings), [findings])
+
   const activeSection =
     sections.find((section) => section.id === pendingSectionId) ?? sections[0] ?? null
+
+  // Opening a section and focusing a field is one action from the depth panel's point of view
+  // but two from React's: the field only exists once the new section has rendered. React 19
+  // flushes a click's state update synchronously, so a macrotask scheduled here runs after the
+  // commit and after the scroll-to-top effect below, which is why the focus wins.
+  //
+  // A timeout rather than `requestAnimationFrame`: rAF does not fire while the window is not
+  // compositing, so a minimised or hidden window would swallow the focus and leave the click
+  // looking like it did nothing.
+  const revealField = useCallback((sectionId: string, fieldPath: string): void => {
+    setPendingSectionId(sectionId)
+    window.setTimeout(() => {
+      document.getElementById(fieldPath)?.focus()
+    }, 0)
+  }, [])
 
   const moveSection = useCallback(
     (offset: number): void => {
@@ -112,7 +133,7 @@ export function CaseEditor({ caseId, onClose }: CaseEditorProps): React.JSX.Elem
   }
 
   return (
-    <div className="grid h-full grid-cols-[13rem_1fr_16rem] overflow-hidden">
+    <div className="grid h-full grid-cols-[13rem_1fr_19rem] overflow-hidden">
       <aside className="flex flex-col overflow-hidden border-r border-neutral-200 dark:border-neutral-800">
         <div className="border-b border-neutral-200 p-2 dark:border-neutral-800">
           <button type="button" className="btn w-full" onClick={onClose}>
@@ -134,6 +155,7 @@ export function CaseEditor({ caseId, onClose }: CaseEditorProps): React.JSX.Elem
               section={activeSection}
               caseFile={caseFile}
               role={role}
+              findingsByPath={findingsByPath}
               update={update}
             />
             <p className="mt-8 text-xs text-neutral-400 dark:text-neutral-500">
@@ -157,6 +179,7 @@ export function CaseEditor({ caseId, onClose }: CaseEditorProps): React.JSX.Elem
         />
         <CompletenessMeter completeness={completeness} />
         <PrepTimer timer={timer} completeness={completeness} />
+        <DepthPanel findings={findings} sections={sections} onSelect={revealField} />
 
         <label className="flex items-center gap-2 text-sm">
           <input

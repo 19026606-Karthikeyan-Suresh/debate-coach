@@ -175,6 +175,18 @@ Take the field list from `flattenFields(buildSections(case, role))` rather than 
 
 Shared helpers in `text.ts` and `lexicons.ts` keep rules small and individually testable.
 
+#### What the build settled — `src/analysis/`
+
+Three things the table above does not say, each of which the reference case forced.
+
+**Not every template row is the same kind of writing, and one rule set for all of them is wrong three ways.** `scope.ts` classifies each field as `argument` (our reasoning — everything applies), `report` (their argument, quoted — only sentence length, because grading an opponent's prose is neither useful nor fair), `name` (an actor or a 5W1H answer — vagueness only, since it must be specific but is not prose), or `skip` (speaker positions, sub titles, the motion, the scratch pad). Within `argument`, a second flag marks the *core* rows a judge actually weighs; `causalChain` fires only on those, because a depth warning on all forty rows is forty warnings. The classification lives in the analyzer rather than in `case/fields.ts` on purpose — that registry mirrors the docx and holds only what the template says, while this is the analyzer's opinion about the template.
+
+**No rule ever fires on an empty field.** Emptiness is the completeness meter's job; it is already counted, already named in the prep-timer nudge, and saying it twice is how a panel becomes noise.
+
+**Two thresholds are measured rather than chosen.** `subOverlap` subtracts the motion's own vocabulary before comparing — every substantive in a round shares the motion's nouns, and counting that as similarity flags every case ever built. On the reference case the pair that really is one argument scores 0.11 and a pair on separate ground scores 0.04; the threshold sits at 0.07 and both numbers are pinned by tests. `causalChain` needed three families of connective, not one: plain connectives, mechanism verbs (`reduces`, `forces`), and `by` plus a gerund. With only the first, pages of ordinary policy writing came back as "bare assertion" — the exact false positive the rule cannot afford. `as` stays out, documented, because subtracting its non-causal collocations costs more than the mechanism verbs already buy.
+
+Findings render twice: a wavy underline on the span, and the message plus its Socratic prompt under the box. `FieldEditor` stacks a transparent copy of the text behind the textarea to draw the underlines, which is why `.field-input` now forces `font-family: inherit` and a stable scrollbar gutter — a browser gives a textarea its own font, and either difference rewraps the layer out from under the words. Analysis is debounced 350 ms, so spans always lag the text slightly and `buildHighlightSegments` clamps them.
+
 ### Layer B — Claude audit (`src-tauri/src/coach.rs` + `src/coach/`, opt-in)
 
 Activates when an Anthropic API key has been saved to the OS keychain. Uses **`claude-opus-5`** — thinking is on by default on Opus 5, so send no `thinking` param; set `output_config.effort: "high"` and `max_tokens: 16000`.
