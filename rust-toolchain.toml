@@ -1,0 +1,12 @@
+# Pins the Rust toolchain so every machine compiles the Tauri shell identically.
+# rustup reads this automatically — no manual `rustup override` needed.
+#
+# TODO: replace "stable" with the exact version once rustup is installed.
+# Run `rustc --version` and set e.g. channel = "1.86.0". Floating on "stable"
+# means a teammate cloning six months from now gets a different compiler.
+
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-msvc"]
+profile = "default"

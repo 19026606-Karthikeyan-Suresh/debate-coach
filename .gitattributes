@@ -1,0 +1,11 @@
+# Normalise line endings so a Windows and a macOS teammate don't produce
+# whole-file diffs on every commit.
+* text=auto eol=lf
+
+# Binary — never normalise, never diff as text.
+*.docx binary
+*.bin binary
+*.wav binary
+*.opus binary
+*.png binary
+*.ico binary

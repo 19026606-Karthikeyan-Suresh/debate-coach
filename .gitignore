@@ -1,0 +1,48 @@
+# Python tooling venv — recreate with `python -m venv .venv` + requirements.txt
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# Rust / Tauri build output. `target/` reaches several GB.
+src-tauri/target/
+src-tauri/gen/
+
+# Whisper model weights. ~600 MB across base.en and small.en — fetched by a
+# setup script, never committed.
+*.bin
+src-tauri/resources/models/
+
+# Bundled sidecar binaries, built or downloaded per platform.
+src-tauri/binaries/
+
+# Speech recordings. Local WAVs are the user's voice and can be large;
+# only the Opus copies go to Supabase, never to git.
+recordings/
+*.wav
+*.opus
+
+# Secrets. The Anthropic key lives in the OS keychain, but Supabase URL/anon
+# key land here during local dev.
+.env
+.env.*
+!.env.example
+
+# Personal Claude Code overrides — per-machine, not team state.
+.claude/settings.local.json
+.claude/
+CLAUDE.md
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,13 @@
+# Tooling only. The app itself is TypeScript + Rust and needs none of this.
+# Install:  .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# Reads and diffs the source .docx templates. Used by the template-fidelity agent
+# to prove every field label still matches the template question verbatim.
+python-docx==1.1.2
+
+# Word error rate. Used by the whisper-bench agent to compare base.en against
+# small.en on real recordings — the numbers that justify the two-model split.
+jiwer==3.0.4
+
+# Latency and pace statistics for benchmark runs.
+numpy==2.2.1
