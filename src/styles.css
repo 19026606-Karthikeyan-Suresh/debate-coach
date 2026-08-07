@@ -23,3 +23,58 @@ body {
     'Segoe UI',
     sans-serif;
 }
+
+/* Shared surfaces. These live here rather than as repeated utility strings because the
+   editor renders the same field chrome a few hundred times and the class lists were
+   burying the markup. */
+@layer components {
+  .app-surface {
+    @apply bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100;
+  }
+
+  .panel {
+    @apply rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900;
+  }
+
+  .field-label {
+    @apply block text-sm font-medium text-neutral-900 dark:text-neutral-100;
+  }
+
+  /* Hints sit under the label, never inside the box as placeholder text — placeholder text
+     disappears exactly when you start writing, which is when the advice is wanted. */
+  .field-hint {
+    @apply mt-0.5 block text-xs leading-snug text-neutral-500 dark:text-neutral-400;
+  }
+
+  .field-input {
+    @apply mt-1.5 w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm
+      text-neutral-900 outline-none placeholder:text-neutral-400
+      focus:border-neutral-500 focus:ring-2 focus:ring-neutral-900/10
+      dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100
+      dark:focus:border-neutral-500 dark:focus:ring-neutral-100/10;
+  }
+
+  .btn {
+    @apply inline-flex items-center gap-1.5 rounded-md border border-neutral-300 bg-white px-2.5
+      py-1.5 text-sm font-medium text-neutral-800 transition-colors
+      hover:bg-neutral-100 disabled:pointer-events-none disabled:opacity-40
+      dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800;
+  }
+
+  .btn-primary {
+    @apply border-neutral-900 bg-neutral-900 text-white hover:bg-neutral-800
+      dark:border-neutral-100 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300;
+  }
+
+  .btn-danger {
+    @apply text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950;
+  }
+
+  .section-heading {
+    @apply text-xs font-semibold tracking-widest text-neutral-500 uppercase dark:text-neutral-400;
+  }
+
+  .meter-track {
+    @apply h-1.5 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800;
+  }
+}

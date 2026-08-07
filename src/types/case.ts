@@ -343,6 +343,34 @@ export const OPPOSING_REBUTTAL_LABELS: Readonly<Record<OpposingRebuttalFieldKey,
 }
 
 // ---------------------------------------------------------------------------
+// EXTENSION — BP closing half only. Not a docx block.
+// ---------------------------------------------------------------------------
+
+/**
+ * What a BP closing-half team adds that the opening half did not run.
+ *
+ * The only block with no counterpart in the template — the docx is written for AP, where
+ * nobody extends. It exists because the format registry gives CG/CO roles an `extension`
+ * block id, so without it those seats have a section the editor cannot render. Labels here
+ * are therefore ours, not the template's, and no fidelity test pins them.
+ */
+export interface ExtensionBlock {
+  /** The extension in one sentence. */
+  statement: string
+  /** Why this is new material rather than the opening half restated. */
+  whyNew: string
+  /** Why it matters — new but irrelevant still loses to a good opening half. */
+  whyItMatters: string
+}
+
+/** Labels for {@link ExtensionBlock}. Authored here; the template has no extension section. */
+export const EXTENSION_LABELS: Readonly<Record<keyof ExtensionBlock, string>> = {
+  statement: 'What is your extension?',
+  whyNew: 'Why is this new material?',
+  whyItMatters: 'Why does the extension matter to the debate?',
+}
+
+// ---------------------------------------------------------------------------
 // THIRD SPEAKER — the fill-in-the-blank clash script
 // ---------------------------------------------------------------------------
 
@@ -559,4 +587,6 @@ export interface Case {
   /** One per exchange the whip audits. */
   opposingRebuttals: OpposingRebuttalBlock[]
   clashes: Clash[]
+  /** Null on AP and on BP opening-half seats, which have nothing to extend. */
+  extension: ExtensionBlock | null
 }
