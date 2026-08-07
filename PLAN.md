@@ -115,14 +115,27 @@ interface Case {
   rebuttals: RebuttalBlock[]           // 7 rows each
   opposingRebuttals: OpposingRebuttalBlock[]  // 6 rows each
   clashes: Clash[]                     // Speaker 3 / whip
+  extension: ExtensionBlock | null     // BP closing half only; not a docx block
 }
 ```
 
+`extension` is the one block with no counterpart in the template — the docx is written for AP, where nobody extends. It exists because the format registry gives CG/CO roles an `extension` block id, so without it those seats have a section the editor cannot render. Its three labels are authored rather than quoted, and no fidelity test pins them.
+
 Text fields are `Y.Text` inside a `Y.Doc`, with a plain-object projection for the analyzer, export, and the `doc jsonb` column.
+
+### Field registry and section projection — `src/case/`
+
+Three responsibilities that would otherwise each grow their own idea of what a field is — rendering, completeness counting, and the address an analyzer finding points at — are collapsed into one module.
+
+- `fields.ts` — a `FieldSpec` per editable row: the template question **imported from the `*_LABELS` records** rather than retyped, plus a one-line hint. The Speaker 3 script slots have no label record because the template writes them as prose, so their labels are the sentence with its blank left in as `___`; a test splits each on that marker and looks every fragment up in the real `.docx`. Also holds `withOpponentName`, because the template is written from opposition's chair and says "Prop" where it means "the other side" — rendered unchanged to a government speaker it reads backwards, so the swap happens at render time and the stored label stays verbatim.
+- `sections.ts` — `buildSections(case, role)` projects a case into just the blocks that seat fills, keyed by item id rather than index so a path survives reordering.
+- `completeness.ts` — role-scoped, so a whip is not docked for an empty DEFINITION table. `findNextGap` walks in document order, because the template's order *is* the prep order.
+- `update.ts` — immutable edits. `setFieldByPath` takes the same path strings `buildSections` hands out.
 
 ### UI — `src/components/`
 
-- `TemplateTable.tsx` renders any block's rows as labeled fields, using the **exact template question as the label** plus a one-line hint on what a good answer does.
+- `TemplateTable.tsx` renders resolved fields rather than a block plus a spec list, so it cannot show a row the completeness meter is not counting.
+- `SectionView.tsx` renders one section; everything bespoke in it is structural (add a substantive, answer the mechanism question, pick a side of the "(OR)" fork) because none of those are text boxes.
 - Keyboard-first: Tab between fields, `Ctrl+Enter` to the next section.
 - **Prep timer** with format-aware duration (BP 15 min, AP 30 min) and pacing nudges — "4 min left, Sub 2 has no mechanism yet."
 - **Completeness meter** per role.
@@ -136,6 +149,16 @@ Text fields are `Y.Text` inside a `Y.Doc`, with a plain-object projection for th
 ### Layer A — offline heuristics (`src/analysis/`, always on)
 
 Pure TypeScript, debounced on keystroke. Each rule returns `Finding[]`: `{ fieldPath, severity, span?, rule, message, socraticPrompt }`, rendered as inline underlines plus the depth panel.
+
+**`fieldPath` is the string phase 2 already assigns.** `buildSections` produces it and `setFieldByPath` consumes it, so a finding routes back to its field with no second addressing scheme. Repeatable blocks are keyed by id, not index:
+
+```
+prep.motion                    setup.caseDivision.sub1
+prep.fiveW1H.who               substantives.<uuid>.whyBad
+prep.pois.<uuid>.response      clashes.<uuid>.engagements.<uuid>.responded.whyWrong
+```
+
+Take the field list from `flattenFields(buildSections(case, role))` rather than walking the `Case` object — it is already role-scoped, and it resolves only the selected side of each `(OR)` fork, so rules never fire on a branch the whip is not going to say.
 
 | Rule | What it catches |
 |---|---|
@@ -225,7 +248,15 @@ src-tauri/
 src/
   main.tsx, App.tsx
   types/case.ts            data model
+  types/createCase.ts      empty-block factories, hydrateCase()
   formats/index.ts         AP + BP presets
+  case/fields.ts           FieldSpec registry, withOpponentName()
+  case/sections.ts         buildSections(case, role) -> CaseSection[]
+  case/completeness.ts     role-scoped scoring, findNextGap()
+  case/update.ts           immutable edits, setFieldByPath()
+  case/time.ts             formatClock(), shared with the speech timer
+  hooks/useCaseStore.ts    load + debounced SQLite autosave
+  hooks/usePrepTimer.ts    deadline-based prep countdown
   db/index.ts              SQLite queries, Yjs doc <-> row projection
   sync/supabase.ts         client, auth, join_team, library queries
   sync/provider.ts         Yjs over Realtime; y-webrtc LAN fallback
@@ -236,8 +267,9 @@ src/
   speech/align.ts          streaming DP aligner (pure)
   speech/normalize.ts      lowercase / punct / numerals / phonetic key
   speech/fillers.ts, metrics.ts
-  components/              CaseEditor, TemplateTable, FieldEditor, DepthPanel,
-                           PrepTimer, CompletenessMeter, Library, TeamSetup
+  components/              CaseEditor, SectionView, TemplateTable, FieldEditor,
+                           SectionNav, SeatPicker, PrepTimer, CompletenessMeter,
+                           Library, DepthPanel, TeamSetup
   components/speech/       Teleprompter, SpeechTimer, LiveTranscript,
                            SpeechReport, Playback, SessionHistory
   export/docx.ts, dbcase.ts, speechSheet.tsx
