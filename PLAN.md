@@ -19,7 +19,7 @@ Two properties of that template drive the whole design:
 
 The three-screen mockup (Prep / Speak / Review) is the layout spec.
 
-Environment: Windows 11, Node 24, npm 11, Python 3.13, git. Phase 0 is done — repo initialised, toolchain pinned, tooling venv created. Rust still needs installing before Tauri will build.
+Environment: Windows 11, Node 24, npm 11, Python 3.13, git. Phase 0 is done — repo initialised, toolchain pinned, tooling venv created. Rust 1.97.1 is installed and pinned by `rust-toolchain.toml`.
 
 ---
 
@@ -148,7 +148,7 @@ Three responsibilities that would otherwise each grow their own idea of what a f
 
 ### Layer A — offline heuristics (`src/analysis/`, always on)
 
-Pure TypeScript, debounced on keystroke. Each rule returns `Finding[]`: `{ fieldPath, severity, span?, rule, message, socraticPrompt }`, rendered as inline underlines plus the depth panel.
+Pure TypeScript, debounced on keystroke. Each rule returns `Finding[]`: `{ fieldPath, rule, severity, span, message, socraticPrompt }`, rendered as inline underlines plus the depth panel. `span` is `TextSpan | null` rather than optional — null means the whole field is the problem, which is a different statement from "this rule forgot to say", and the two must not collapse.
 
 **`fieldPath` is the string phase 2 already assigns.** `buildSections` produces it and `setFieldByPath` consumes it, so a finding routes back to its field with no second addressing scheme. Repeatable blocks are keyed by id, not index:
 
@@ -269,10 +269,14 @@ src/
   case/time.ts             formatClock(), shared with the speech timer
   hooks/useCaseStore.ts    load + debounced SQLite autosave
   hooks/usePrepTimer.ts    deadline-based prep countdown
+  hooks/useAnalysis.ts     debounced runAnalysis
   db/index.ts              SQLite queries, Yjs doc <-> row projection
   sync/supabase.ts         client, auth, join_team, library queries
   sync/provider.ts         Yjs over Realtime; y-webrtc LAN fallback
-  analysis/index.ts        runAnalysis(case) -> Finding[]
+  analysis/index.ts        runAnalysis(case, role) -> Finding[]
+  analysis/types.ts        Finding, RuleContext, AnalysisRule
+  analysis/scope.ts        which rules may fire on which field
+  analysis/highlight.ts    findings -> underline segments
   analysis/text.ts, lexicons.ts, rules/*.ts
   script/compile.ts        Case -> ScriptSegment[]
   speech/recognition.ts    TranscriptionSource, WhisperLiveSource, WebSpeechSource
@@ -291,10 +295,10 @@ src/
 **Build order.** Each phase is usable on its own, and each ends in a commit:
 
 0. ~~Project scaffold, pinned toolchain, git~~ — done
-1. Tauri scaffold + SQLite + formats + data model
-2. Case Builder UI
-3. Analyzer Layer A
-4. Script compiler *(the hinge — lands before any speech UI)*
+1. ~~Tauri scaffold + SQLite + formats + data model~~ — done
+2. ~~Case Builder UI~~ — done
+3. ~~Analyzer Layer A~~ — done
+4. Script compiler *(the hinge — lands before any speech UI)* ← **next**
 5. Whisper sidecar + aligner + teleprompter + timer
 6. Report + session history
 7. Claude Layer B
@@ -340,7 +344,10 @@ Every exported function, type, and Rust public item. State what it does and why 
  * @param connectives - Causal markers to match. Pass a trimmed set to test a single family in isolation.
  * @returns Depth, plus the span of the longest chain so the UI can underline it.
  */
-export function measureCausalChain(passage: string, connectives: Connective[]): CausalChainResult
+export function measureCausalChain(
+  passage: string,
+  connectives: readonly LexiconEntry[],
+): CausalChainResult
 ```
 
 Not: *"This function is responsible for taking in a piece of text and carefully analysing it in order to determine the various causal connectives that may be present."* Say what it does, then stop.
