@@ -513,22 +513,45 @@ function chooseCommit(
 }
 
 /**
- * Aligns a whole transcript in one call.
+ * Words of transcript fed per advance when replaying a finished speech.
  *
- * The streaming path fed everything at once. Convenient for tests and for the phase 6 report,
- * which re-runs alignment against the accurate `small.en` transcript after the speech.
+ * Roughly seven seconds of delivery, which is a few whisper ticks' worth — close enough to the
+ * live path that a replay and a live run reach the same classifications, and far enough under
+ * `scriptWindow` that no advance can present more new speech than the window can absorb.
+ */
+const REPLAY_CHUNK_WORDS = 20
+
+/**
+ * Aligns a whole transcript, as if it had been delivered.
+ *
+ * **Advances in chunks rather than handing over everything at once, and that is not an
+ * optimisation.** `scriptWindow` bounds how far ahead of the anchor one advance can look, so a
+ * single call against a full-length speech can only ever reach the first 160 script words —
+ * the other nine hundred come back skipped and the whole transcript comes back improvised. The
+ * anchor only moves when a commit is taken, and a commit only happens on an advance, so the
+ * script is walked by advancing repeatedly. That is exactly what the live path does; this
+ * replays it.
+ *
+ * Used by the report, which re-runs alignment against the accurate `small.en` transcript once
+ * the speech is over, and by tests.
  *
  * @param scriptWords - The script's words in delivery order.
  * @param transcript - Every word said, in order.
  * @param options - Tuning overrides.
- * @returns The final state.
+ * @returns The final state, identical to what streaming the same words live would have produced.
  */
 export function alignSpeech(
   scriptWords: readonly string[],
   transcript: readonly string[],
   options: Partial<AlignmentOptions> = {},
 ): AlignmentState {
-  return advanceAlignment(createAlignment(scriptWords, options), transcript)
+  let state = createAlignment(scriptWords, options)
+  for (let spoken = 0; spoken < transcript.length; spoken += REPLAY_CHUNK_WORDS) {
+    // The whole transcript so far, every time — `advanceAlignment` takes the full list by
+    // contract and re-reads only what it has not frozen.
+    state = advanceAlignment(state, transcript.slice(0, spoken + REPLAY_CHUNK_WORDS))
+  }
+  return transcript.length === 0 ? advanceAlignment(state, transcript) : state
 }
 
 /**

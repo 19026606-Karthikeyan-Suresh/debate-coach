@@ -168,7 +168,8 @@ pub struct WhisperStatus {
 }
 
 /// One timestamped chunk of transcript as whisper-cli prints it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TranscriptSegment {
     /// Seconds from the start of the file it was decoded from — the window, not the speech.
     pub start: f64,
@@ -176,6 +177,21 @@ pub struct TranscriptSegment {
     pub end: f64,
     /// The words, already trimmed. Never empty; blank segments are dropped at parse time.
     pub text: String,
+}
+
+/// The accurate transcript, and the timings that only the post-speech pass has.
+///
+/// The live path emits text alone: its windows are re-decoded and slid past, so a timestamp from
+/// one of them means nothing once the window has moved. This pass decodes the whole recording
+/// once, in one frame of reference, which is what lets the report put a time on a filler and a
+/// duration on a section.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewTranscript {
+    /// Every segment's text, joined by single spaces. What the aligner is re-run against.
+    pub text: String,
+    /// The same words, still carrying the times they were said at.
+    pub segments: Vec<TranscriptSegment>,
 }
 
 /// A live transcript, as it stands this tick.
@@ -699,15 +715,16 @@ pub fn push_speech_audio(
 /// Ends the recording, writes the WAV, and waits for the final transcript.
 ///
 /// Blocks until the worker has flushed, which takes up to one window — the last emitted update
-/// carries `isFinal`, and it is the one the report should be built from until `small.en` has
-/// re-transcribed.
+/// carries `isFinal`, and it is the one the report is built from until `small.en` has
+/// re-transcribed. `(async)` because of that wait: the flush runs a whole whisper decode, and on
+/// the main thread that is the window freezing at the exact moment the speaker sits down.
 ///
 /// * `state` — the open recording.
 ///
 /// # Errors
 /// [`WhisperError::NotRecording`] as a message when nothing is open, or the underlying io error
 /// when the WAV cannot be written.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stop_speech_session(
     state: tauri::State<'_, SpeechState>,
 ) -> Result<SessionRecording, String> {
@@ -734,20 +751,25 @@ pub fn stop_speech_session(
 
 /// Re-transcribes a finished recording with `small.en`.
 ///
-/// The accurate pass. `base.en` is chosen for the live path because it keeps up, not because it
-/// is right; the numbers in the report come from this one.
+/// The accurate pass, and the one the report's numbers come from. `base.en` is chosen for the
+/// live path because it keeps up, not because it is right.
 ///
-/// * `app` — resolves the review model.
+/// `(async)` is not decoration: `small.en` over a seven-minute speech is minutes of CPU, and a
+/// synchronous command runs on the main thread. The frontend is expected to show the live
+/// report immediately and swap this one in when it lands.
+///
+/// * `app` — resolves the review model. Falls back to `base.en` when `small.en` was never
+///   downloaded, which produces a transcript no better than the live one rather than an error.
 /// * `wav_path` — a WAV this app wrote. A file at another sample rate transcribes as noise.
-/// * `returns` — the transcript as one string, segments joined by spaces.
+/// * `returns` — the joined transcript and the timestamped segments behind it.
 ///
 /// # Errors
 /// Returns a message when whisper is unavailable or the decode fails.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn retranscribe_speech<TRuntime: Runtime>(
     app: AppHandle<TRuntime>,
     wav_path: PathBuf,
-) -> Result<String, String> {
+) -> Result<ReviewTranscript, String> {
     let assets = resolve_assets(&app).map_err(|error| error.to_string())?;
     let segments = transcribe_wav(
         &assets.cli,
@@ -757,11 +779,11 @@ pub fn retranscribe_speech<TRuntime: Runtime>(
     )
     .map_err(|error| error.to_string())?;
 
-    let mut transcript = String::new();
+    let mut text = String::new();
     for segment in &segments {
-        push_words(&mut transcript, &segment.text);
+        push_words(&mut text, &segment.text);
     }
-    Ok(transcript)
+    Ok(ReviewTranscript { text, segments })
 }
 
 /// Sample rate the frontend must resample to before pushing audio.

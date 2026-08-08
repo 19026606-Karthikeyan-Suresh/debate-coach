@@ -9,6 +9,8 @@
 import Database from '@tauri-apps/plugin-sql'
 
 import type { FormatId, Side } from '../formats/index.ts'
+import type { SessionMetrics } from '../speech/metrics.ts'
+import type { SpeechReport } from '../speech/report.ts'
 import type { Case, Visibility } from '../types/case.ts'
 import { hydrateCase } from '../types/createCase.ts'
 
@@ -138,4 +140,168 @@ export async function listCases(limit = 100): Promise<CaseSummary[]> {
 export async function deleteCase(caseId: string): Promise<void> {
   const database = await getDatabase()
   await database.execute('DELETE FROM cases WHERE id = $1', [caseId])
+}
+
+/**
+ * One delivered speech, as the history list needs it.
+ *
+ * The numbers come from `sessions.metrics`; the detail behind them stays in `sessions.report` and
+ * is only read when a report is actually opened. A season of sessions is a season of transcripts,
+ * and the Review screen should not load them all to draw a chart.
+ */
+export interface SessionSummary {
+  readonly id: string
+  /** Null once the case has been deleted. The report still opens; it carries its own copy. */
+  readonly caseId: string | null
+  /**
+   * The case's motion **as it stands now**, so a session is found by the debate it belongs to.
+   * Empty when the case is gone — the report's own copy is what survives that.
+   */
+  readonly motion: string
+  readonly format: FormatId
+  readonly role: string
+  readonly durationSeconds: number
+  readonly metrics: SessionMetrics
+  readonly recordingPath: string | null
+  readonly createdAt: string
+}
+
+/** Shape of the joined `sessions` row as the SQL plugin returns it. */
+interface SessionRow {
+  id: string
+  case_id: string | null
+  motion: string | null
+  format: FormatId
+  role: string
+  duration_s: number
+  metrics: string
+  recording_path: string | null
+  created_at: string
+  report: string | null
+}
+
+/**
+ * Writes a session, or overwrites the one already there.
+ *
+ * Called twice for one speech and that is the design: the live report is stored the moment the
+ * speaker sits down, so a crash during the `small.en` re-pass costs the accurate numbers rather
+ * than the session, and the accurate report replaces it in the same row when it lands.
+ *
+ * @param report - The report to store. Its `sessionId` is the primary key and everything else on
+ *   the row is derived from it, so two reports with the same id are the same speech by
+ *   definition — pass a fresh id for a fresh speech or the earlier one is lost.
+ * @param recordingPath - Local WAV, or null on the browser fallback which records nothing.
+ */
+export async function saveSession(
+  report: SpeechReport,
+  recordingPath: string | null,
+): Promise<void> {
+  const database = await getDatabase()
+  await database.execute(
+    `INSERT INTO sessions (id, case_id, format, role, duration_s, metrics, recording_path,
+                           created_at, report)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT(id) DO UPDATE SET
+       duration_s = excluded.duration_s,
+       metrics = excluded.metrics,
+       recording_path = excluded.recording_path,
+       report = excluded.report`,
+    [
+      report.sessionId,
+      report.caseId,
+      report.format,
+      report.roleId,
+      report.metrics.durationSeconds,
+      JSON.stringify(report.metrics),
+      recordingPath,
+      report.createdAt,
+      JSON.stringify(report),
+    ],
+  )
+}
+
+/**
+ * Lists sessions newest-first for the Review screen.
+ *
+ * @param limit - Maximum rows. Defaults to 100.
+ * @returns Summaries only. A row whose `metrics` cannot be parsed is dropped rather than
+ *   returned half-built — it predates the current shape, and charting it would compare a number
+ *   against one that means something else.
+ */
+export async function listSessions(limit = 100): Promise<SessionSummary[]> {
+  const database = await getDatabase()
+  const rows = await database.select<SessionRow[]>(
+    `SELECT sessions.id, sessions.case_id, sessions.format, sessions.role, sessions.duration_s,
+            sessions.metrics, sessions.recording_path, sessions.created_at, cases.motion
+     FROM sessions LEFT JOIN cases ON cases.id = sessions.case_id
+     ORDER BY sessions.created_at DESC LIMIT $1`,
+    [limit],
+  )
+
+  return rows.flatMap((row) => {
+    const metrics = parseMetrics(row.metrics)
+    return metrics
+      ? [
+          {
+            id: row.id,
+            caseId: row.case_id,
+            motion: row.motion ?? '',
+            format: row.format,
+            role: row.role,
+            durationSeconds: row.duration_s,
+            metrics,
+            recordingPath: row.recording_path,
+            createdAt: row.created_at,
+          },
+        ]
+      : []
+  })
+}
+
+/** Parses a stored metrics blob, or null when it is missing or not the current shape. */
+function parseMetrics(stored: string): SessionMetrics | null {
+  try {
+    const parsed = JSON.parse(stored) as Partial<SessionMetrics>
+    return parsed.version === 1 ? (parsed as SessionMetrics) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Loads one stored report.
+ *
+ * @param sessionId - Primary key.
+ * @returns The report, or null when the row is unknown, has no report stored, or holds one from
+ *   an older shape. The last case is why {@link SpeechReport.version} exists: rendering a report
+ *   whose fields have moved is worse than saying it cannot be opened.
+ */
+export async function loadSessionReport(sessionId: string): Promise<SpeechReport | null> {
+  const database = await getDatabase()
+  const rows = await database.select<SessionRow[]>('SELECT report FROM sessions WHERE id = $1', [
+    sessionId,
+  ])
+  const stored = rows[0]?.report
+  if (!stored) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(stored) as Partial<SpeechReport>
+    return parsed.version === 1 ? (parsed as SpeechReport) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Deletes a session.
+ *
+ * Leaves the WAV on disk. Removing a recording is a separate, louder action than tidying a list,
+ * and a file deleted from under a coach's comment in phase 10 is not recoverable.
+ *
+ * @param sessionId - Primary key. Deleting an unknown id is a no-op, not an error.
+ */
+export async function deleteSession(sessionId: string): Promise<void> {
+  const database = await getDatabase()
+  await database.execute('DELETE FROM sessions WHERE id = $1', [sessionId])
 }
