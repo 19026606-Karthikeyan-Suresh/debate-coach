@@ -173,3 +173,35 @@ body {
       dark:bg-amber-800 dark:text-amber-100;
   }
 }
+
+/* Speech sheet — the paper backup for the teleprompter.
+   On screen it is a fixed overlay; on paper it is the whole page, which is why it portals to
+   `document.body` rather than rendering inside the editor's grid. `body.sheet-open` is set while
+   it is mounted so the print rules below can hide the app behind it without a `:has()` selector
+   that a future webview might disagree about. */
+@media print {
+  body.sheet-open > #root {
+    display: none !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-root {
+    position: static !important;
+    overflow: visible !important;
+    background: white !important;
+    color: black !important;
+  }
+
+  /* A heading orphaned at the foot of a page sends the reader to the wrong paragraph, which at
+     a lectern costs the sentence they were mid-way through. */
+  .sheet-heading {
+    break-after: avoid-page;
+  }
+
+  .sheet-paragraph {
+    break-inside: avoid-page;
+  }
+}
