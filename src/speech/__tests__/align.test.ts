@@ -10,8 +10,28 @@
 
 import { describe, expect, it } from 'vitest'
 
+import { buildFilledExampleCase } from '../../analysis/__tests__/fixture.ts'
+import { getRole } from '../../formats/index.ts'
+import type { SpeakerRole } from '../../formats/index.ts'
+import { compileScript } from '../../script/compile.ts'
 import type { AlignmentState } from '../align.ts'
-import { advanceAlignment, alignSpeech, createAlignment, skipRate, tokensWithStatus } from '../align.ts'
+import {
+  advanceAlignment,
+  alignSpeech,
+  createAlignment,
+  DEFAULT_ALIGNMENT_OPTIONS,
+  skipRate,
+  tokensWithStatus,
+} from '../align.ts'
+
+/** The seat the fixture case is written for. Fails loudly rather than aligning an empty script. */
+function apPrimeMinister(): SpeakerRole {
+  const role = getRole('AP', 'ap-pm')
+  if (!role) {
+    throw new Error('No such role: AP/ap-pm')
+  }
+  return role
+}
 
 const SCRIPT_TEXT =
   'My first substantive is that fake news causes irreparable damage. ' +
@@ -34,6 +54,21 @@ function skippedWords(state: AlignmentState): readonly string[] {
 /** The words the speaker added that are not in the script. */
 function addedWords(state: AlignmentState): readonly string[] {
   return state.improvisations.map((item) => item.text)
+}
+
+/** Feeds a transcript in fixed-size chunks, the way a live source delivers it. */
+function streamStatuses(
+  scriptWords: readonly string[],
+  transcript: readonly string[],
+  chunk: number,
+): readonly string[] {
+  let state = createAlignment(scriptWords)
+  for (let index = chunk; index <= transcript.length; index += chunk) {
+    state = advanceAlignment(state, transcript.slice(0, index))
+  }
+  // The last partial chunk, so the whole transcript has always been seen.
+  state = advanceAlignment(state, transcript)
+  return state.tokens.map((token) => token.status)
 }
 
 describe('a speech delivered as written', () => {
@@ -212,12 +247,7 @@ describe('streaming', () => {
   it('reaches the same answer as one call, whatever the chunk size', () => {
     const oneShot = alignSpeech(SCRIPT, SCRIPT).tokens.map((token) => token.status)
     for (const chunk of [1, 2, 5, 13]) {
-      let streamed = createAlignment(SCRIPT)
-      for (let index = chunk; index <= SCRIPT.length; index += chunk) {
-        streamed = advanceAlignment(streamed, SCRIPT.slice(0, index))
-      }
-      streamed = advanceAlignment(streamed, SCRIPT)
-      expect(streamed.tokens.map((token) => token.status)).toEqual(oneShot)
+      expect(streamStatuses(SCRIPT, SCRIPT, chunk)).toEqual(oneShot)
     }
   })
 
@@ -247,6 +277,56 @@ describe('streaming', () => {
     const state = advanceAlignment(createAlignment(SCRIPT), [])
     expect(state.cursor).toBe(0)
     expect(tokensWithStatus(state, 'pending')).toHaveLength(SCRIPT.length)
+  })
+})
+
+/**
+ * A whole seven-minute speech, compiled from the analyzer's fixture case.
+ *
+ * Real prose rather than distinct made-up words: a thousand words of debate writing repeats
+ * "the", "that" and "fake news" constantly, and repetition is what makes a DP over a window hard.
+ */
+const FULL_SCRIPT = compileScript(buildFilledExampleCase(), apPrimeMinister()).tokens.map(
+  (token) => token.text,
+)
+
+/**
+ * The window bounds, at the length they actually bite at.
+ *
+ * `alignSpeech` shipped in phase 5 unable to align a speech of this length — one advance cannot
+ * see past `scriptWindow`, so it reached word 160 and called the remaining nine hundred skipped.
+ * Every aligner test written at the time used a script that fitted inside one window, which is
+ * the whole reason it survived a phase. These are the tests that would have caught it.
+ */
+describe('a full-length speech', () => {
+  it('is several windows long, or it is not testing what it claims to', () => {
+    expect(FULL_SCRIPT.length).toBeGreaterThan(DEFAULT_ALIGNMENT_OPTIONS.scriptWindow * 3)
+  })
+
+  it('is entirely spoken when it is delivered verbatim', () => {
+    const state = alignSpeech(FULL_SCRIPT, FULL_SCRIPT)
+    expect(tokensWithStatus(state, 'skipped')).toEqual([])
+    expect(addedWords(state)).toEqual([])
+    expect(tokensWithStatus(state, 'spoken')).toHaveLength(FULL_SCRIPT.length)
+  })
+
+  it('names only the dropped clause when one is dropped near the end', () => {
+    // Past the first window on purpose: a skip inside the opening 160 words was already found by
+    // the broken version, which is why the bug was invisible.
+    const from = FULL_SCRIPT.length - 200
+    const delivered = [...FULL_SCRIPT.slice(0, from), ...FULL_SCRIPT.slice(from + 9)]
+    const state = alignSpeech(FULL_SCRIPT, delivered)
+
+    expect(tokensWithStatus(state, 'skipped')).toHaveLength(9)
+    expect(skipRate(state)).toBeLessThan(0.02)
+  })
+
+  it('reaches the same answer however the transcript is chunked', () => {
+    const delivered = FULL_SCRIPT.filter((_word, index) => index < 300 || index > 320)
+    const reference = alignSpeech(FULL_SCRIPT, delivered).tokens.map((token) => token.status)
+    for (const chunk of [7, 23, 61]) {
+      expect(streamStatuses(FULL_SCRIPT, delivered, chunk)).toEqual(reference)
+    }
   })
 })
 
