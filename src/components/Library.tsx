@@ -10,7 +10,8 @@ import { useCallback, useEffect, useState } from 'react'
 
 import type { FormatId } from '../formats/index.ts'
 import { FORMATS, getFormat } from '../formats/index.ts'
-import { deleteCase, listCases, saveCase, type CaseSummary } from '../db/index.ts'
+import { deleteCase, listCaseIds, listCases, saveCase, type CaseSummary } from '../db/index.ts'
+import { importCaseFile } from '../export/index.ts'
 import { createEmptyCase } from '../types/createCase.ts'
 
 /** Props for {@link Library}. */
@@ -32,6 +33,9 @@ export interface LibraryProps {
 export function Library({ onOpen, onReview }: LibraryProps): React.JSX.Element {
   const [cases, setCases] = useState<CaseSummary[]>([])
   const [error, setError] = useState<string | null>(null)
+  // What the last import did. Which of the two outcomes it was is the whole point of saying so:
+  // "restored" replaced nothing, "copied" means the original is still in the list above it.
+  const [notice, setNotice] = useState<string | null>(null)
   const [newFormat, setNewFormat] = useState<FormatId>('AP')
   const [newRoleId, setNewRoleId] = useState<string>(FORMATS.AP.roles[0]?.id ?? '')
 
@@ -78,6 +82,27 @@ export function Library({ onOpen, onReview }: LibraryProps): React.JSX.Element {
       setError(createError instanceof Error ? createError.message : String(createError))
     }
   }, [newFormat, newRoleId, onOpen])
+
+  const handleImport = useCallback(async (): Promise<void> => {
+    setError(null)
+    setNotice(null)
+    try {
+      // Every id, not the paginated list — see `listCaseIds` for why that distinction matters.
+      const imported = await importCaseFile(await listCaseIds())
+      if (!imported) {
+        return
+      }
+      await saveCase(imported.caseFile)
+      await refresh()
+      setNotice(
+        imported.outcome === 'restored'
+          ? 'Case restored from file.'
+          : 'That case is already here, so it was imported as a copy.',
+      )
+    } catch (importError) {
+      setError(importError instanceof Error ? importError.message : String(importError))
+    }
+  }, [refresh])
 
   const handleDelete = useCallback(
     async (caseId: string): Promise<void> => {
@@ -152,7 +177,21 @@ export function Library({ onOpen, onReview }: LibraryProps): React.JSX.Element {
         >
           New case
         </button>
+
+        <button
+          type="button"
+          className="btn"
+          onClick={() => {
+            void handleImport()
+          }}
+        >
+          Import .dbcase
+        </button>
       </section>
+
+      {notice && (
+        <p className="text-sm text-neutral-600 dark:text-neutral-300">{notice}</p>
+      )}
 
       {error && (
         <p className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">

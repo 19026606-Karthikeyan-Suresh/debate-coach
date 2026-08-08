@@ -144,6 +144,22 @@ Three responsibilities that would otherwise each grow their own idea of what a f
 - **Library** — my cases plus the team's, searched server-side when online and against the SQLite cache when not.
 - **Export** — `.docx` in the original template layout, `.dbcase` JSON, print/PDF speech sheet.
 
+#### What the build settled — `src/export/` and `src-tauri/src/export.rs`
+
+**The `.docx` is written rather than filled, and that is what makes it faithful.** The obvious implementation is to open `reference/template-blank.docx` and drop answers into its blanks. It cannot work: the template has exactly one of each table and a case has three substantives, two clashes and however many rebuttals, so the real job is duplicating XML nodes and splitting runs at a `___` that Word has scattered across four of them. Writing the document instead costs a ZIP writer and five XML parts — and buys the fidelity outright, because the question column is `buildSections`, whose labels are *imported* from the `*_LABELS` records that `template-fidelity.test.ts` diffs against the real docx. The export cannot drift from the template without failing a test that never mentions exporting. `docx.test.ts` closes the loop anyway by looking every exported question back up in the blank template.
+
+**Well-formed XML is not a valid document, and only Word can tell you.** The children of `w:pPr` are a schema *sequence*, so `w:outlineLvl` before `w:spacing` parses perfectly and makes Word discard the entire styles part — every heading silently collapses to Normal. Found by opening the generated file in Word through COM and reading the paragraph styles back: `Heading 1` at outline level 1 is what proves `styles.xml` was accepted rather than merely present. Word also opens the case export with 12 tables and the first cell reading "Motion:", which is the only end-to-end evidence that exists for a hand-written OOXML package.
+
+**Everything that decides what a file contains is pure; one module talks to the OS.** `zip.ts`, `ooxml.ts`, `docx.ts`, `dbcase.ts` and `speechSheet.ts` are all node-testable, and `export/index.ts` holds the save dialog and the IPC. The archive is **stored, never deflated** — compression needs `CompressionStream`, which is async and would make every caller a promise, to shrink a file nobody transfers — and **deterministic**, so two exports of one case are byte-identical and a diff between them is a diff between cases.
+
+**The export is the whole template, not the seat.** Everything else in the app is role-scoped and this is not, because a `.docx` gets printed and handed to the rest of the team, and a whip's export that silently omits DEFINITION is not the template. Empty rows are printed for the same reason. What is *structurally* absent stays absent: no POLICY when the mechanism question was answered no, no REBUTTAL heading when no rebuttal exists — a block that does not exist is a different statement from a row nobody has filled. Preempts are the one thing pulled in from outside `buildSections`, because they are outside it for storage reasons rather than because they are not prep.
+
+**Importing a `.dbcase` never overwrites.** A file whose case id is already here is imported as a copy with a fresh id and the caller is told which of the two happened; a file whose id is not here is restored exactly, same id and same timestamps, which is what `saveCase` taking `updatedAt` off the document rather than the clock was always for. The collision check reads `listCaseIds`, not the library's paginated list — restoring over case 101 because the list stopped at 100 is precisely the failure this format must not have.
+
+**The Rust side writes the bytes instead of `tauri-plugin-fs`.** That plugin's scope is a path allowlist declared in the capability file, which for a user-chosen save path is either narrower than a dialog needs or, written `**`, the whole disk. Two commands that each accept one extension are a smaller thing to reason about, and the extension check is the boundary: a command that writes arbitrary bytes to an arbitrary path is a general-purpose file writer reachable from a webview. `cargo test` pins the exact argument object the frontend sends, including that a `Uint8Array` which forgot `Array.from` fails to deserialise — otherwise that shape is only ever checked by pressing the button.
+
+**Two bugs the phase found rather than built.** The meta line printed `exported 2026-08-08` when opened at 01:03 on the 9th, because `toISOString().slice(0, 10)` is the UTC date; the date is now formatted from local parts in the impure module and the pure ones take it pre-formatted, which also makes them time-zone-free to test. And the speech sheet's print rules are verified by pulling them out of `document.styleSheets` and asking the DOM whether their selectors match anything — `body.sheet-open > #root` matching zero elements is exactly how a print stylesheet fails, and it fails silently.
+
 ---
 
 ## Part 2 — Depth Analyzer
@@ -344,6 +360,7 @@ src-tauri/
   src/whisper.rs           sidecar lifecycle, rolling-window worker, event emit
   src/audio.rs             PCM buffer, WAV writer (Opus encode lands in phase 9)
   src/coach.rs             Anthropic calls, keychain-backed key
+  src/export.rs            extension-checked file write + `.dbcase` read
   src/sync.rs              offline queue, upload/download, conflict handling
   src/db.rs                SQLite migrations
 src/
@@ -395,10 +412,16 @@ src/
   hooks/useSpeechReview.ts live report, small.en re-pass, session row
   components/              CaseEditor, SectionView, TemplateTable, FieldEditor,
                            SectionNav, SeatPicker, PrepTimer, CompletenessMeter,
-                           Library, DepthPanel, CoachPanel, PreemptList, TeamSetup
+                           Library, DepthPanel, CoachPanel, PreemptList, TeamSetup,
+                           ExportPanel, SpeechSheetView
   components/speech/       SpeechView, Teleprompter, SpeechTimer, LiveTranscript,
                            SpeechReport, SessionHistory, Playback (phase 10)
-  export/docx.ts, dbcase.ts, speechSheet.tsx
+  export/zip.ts            CRC-32 + stored-entry ZIP writer, deterministic (pure)
+  export/ooxml.ts          WordprocessingML fragments + the five package parts (pure)
+  export/docx.ts           buildCaseDocx, buildSpeechSheetDocx (pure)
+  export/dbcase.ts         serialise + import with the restore/copy rule (pure)
+  export/speechSheet.ts    printable model off compileScript (pure)
+  export/index.ts          save/open dialogs and the two Tauri commands
   **/__tests__/*.test.ts
 ```
 
@@ -412,8 +435,8 @@ src/
 5. ~~Whisper sidecar + aligner + teleprompter + timer~~ — done
 6. ~~Report + session history~~ — done
 7. ~~Claude Layer B~~ — done
-8. Export + `.docx` / `.dbcase` ← **next**
-9. Supabase: schema, RLS, invite-code join, library sync, recording upload
+8. ~~Export + `.docx` / `.dbcase`~~ — done
+9. Supabase: schema, RLS, invite-code join, library sync, recording upload ← **next**
 10. Coach comments on recordings
 11. Live co-prep over Realtime, then the y-webrtc LAN fallback
 
@@ -550,13 +573,13 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
 
 **`crdt-sync` is split rather than kept.** The Yjs document shape and the doc↔row projection are design work tangled with the data model and the editor — inline. The convergence tests under partition are adversarial against a finished provider, and that half is agent work; fold it into phase 11 as a test brief rather than an agent that owns the feature.
 
-**Still not agents.** The Case Builder UI, the script compiler, and the export path are one-off, highly interdependent, and easier to hold in one head than to brief — build those inline. Phases 1–3 confirmed it.
+**Still not agents.** The Case Builder UI, the script compiler, and the export path are one-off, highly interdependent, and easier to hold in one head than to brief — build those inline. Phases 1–3 confirmed it, and **phase 8 confirmed the export half specifically, though not for the reason given.** The export path is neither interdependent nor hard to brief; a ZIP writer and an OOXML emitter are about as isolated and as fixed-target as work gets. What an agent would have shipped is a file that is well-formed XML and that Word discards half of, because the win condition it would have been briefed against — "the reader gets the text back" — is satisfied by exactly that file. The thing that caught it was opening the result in Word, which is not a brief, it is knowing what would still be wrong once the tests passed.
 
 ---
 
 ## Verification
 
-1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 694 tests across 29 files, alongside `cargo test` at 31.
+1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 752 tests across 34 files, alongside `cargo test` at 42.
 2. **Regression fixture from real work.** Seed the fake-news case from my friend's filled example (`reference/template-filled-example.docx`). It has genuine, checkable defects the analyzer must catch:
    - `subOverlap` flags Sub 1 ("fake news causes irreparable damage") against Sub 2 ("allowing the spread is supporting it") — they share most of their content vocabulary.
    - `vagueness` flags "damages lives", "individuals in society", "many damages".
@@ -581,7 +604,10 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
 8. **Offline test** — disable networking entirely. Case building, analysis, transcription, alignment, and reporting all still work; edits queue and drain on reconnect. Only the Claude button and library refresh degrade.
 9. `npm run tauri build` → install the `.msi` on a second machine with no dev tools; confirm speech capture works with zero setup.
 10. With an API key saved: run `attack` on a substantive, confirm three opposition responses come back and that no returned field contains a written-out argument for my own motion. **Half done — everything except the call itself.** The schema has nowhere to put an argument for my own motion and a test walks it to prove that; the guard rejects the phrasings that would smuggle one past a schema, with an accepting case beside every rejecting one; and the panel was driven through all seven of its states against synthetic replies, which is what caught the run being filed under the wrong substantive. What is untested is the round trip: no request has been sent, so nothing yet says whether `effort: "high"` is tolerable against a prep clock, whether the guard rejects things Opus 5 genuinely writes, or whether this account can use the refusal-fallback beta. That needs an API key, which is the debater's to add.
-11. **RLS test** — join two teams with different codes from two installs and confirm neither can read the other's cases, sessions, or recordings by any query. Mark a case `private` and confirm a teammate cannot see it. Rotate the invite code and confirm the old one stops working.
-12. **Recording round-trip** — record a speech, confirm the Opus upload is roughly a tenth the WAV's size, then play it back on a second machine and leave a comment at a timestamp that appears on the first.
-13. **Co-prep test** — two instances edit different fields of one case simultaneously; confirm convergence with no lost text. Pull one machine off the network mid-edit and confirm it reconciles on rejoin. Then kill internet on both and confirm the LAN fallback still merges.
-14. **Conventions hold** — `npm run lint` and `cargo clippy -- -D warnings` both pass with the docstring rules on. Then delete a docstring and a param description and confirm CI actually fails, so the rule isn't quietly disabled.
+11. **Export round-trip.** **Done, including the part only Word can answer.** The generated `.docx` is read back by `readDocx.ts` — the same reader every fidelity test runs against the real template — and every question in it is looked back up in `reference/template-blank.docx`. Beyond that: .NET's `ZipFile` opens the archive, every one of the five XML parts parses, and **Microsoft Word opens both exports through COM** — 12 tables in the case export with "Motion:" in the first cell, and the custom styles resolving to `Heading 1` at outline level 1, which is what proves `styles.xml` was accepted rather than discarded. A `.dbcase` round-trips to an equal `Case`, and re-importing one already present lands as a copy rather than over the top of it. The speech sheet was driven in a browser: its rendered paragraphs are character-identical to the model's, and every `@media print` selector was pulled out of the live stylesheet and matched against the real DOM.
+
+    **Still open**: nothing has been through the actual save dialog. The extension check, the argument shape and the file read are covered by `cargo test`, and the capability resolves `dialog:default` at build time, but no path has come back from `save()` on this machine — that needs `npm run tauri dev` and a hand on the mouse.
+12. **RLS test** — join two teams with different codes from two installs and confirm neither can read the other's cases, sessions, or recordings by any query. Mark a case `private` and confirm a teammate cannot see it. Rotate the invite code and confirm the old one stops working.
+13. **Recording round-trip** — record a speech, confirm the Opus upload is roughly a tenth the WAV's size, then play it back on a second machine and leave a comment at a timestamp that appears on the first.
+14. **Co-prep test** — two instances edit different fields of one case simultaneously; confirm convergence with no lost text. Pull one machine off the network mid-edit and confirm it reconciles on rejoin. Then kill internet on both and confirm the LAN fallback still merges.
+15. **Conventions hold** — `npm run lint` and `cargo clippy -- -D warnings` both pass with the docstring rules on. Then delete a docstring and a param description and confirm CI actually fails, so the rule isn't quietly disabled.

@@ -133,6 +133,22 @@ export async function listCases(limit = 100): Promise<CaseSummary[]> {
 }
 
 /**
+ * Every case id on this machine.
+ *
+ * Separate from {@link listCases} because the importer needs *all* of them and that list is
+ * paginated: a `.dbcase` restored over case 101 would overwrite it silently, which is the one
+ * failure the import path is built to avoid. Ids only, so a season of cases is still one small
+ * query.
+ *
+ * @returns Ids in no particular order.
+ */
+export async function listCaseIds(): Promise<string[]> {
+  const database = await getDatabase()
+  const rows = await database.select<{ id: string }[]>('SELECT id FROM cases')
+  return rows.map((row) => row.id)
+}
+
+/**
  * Deletes a case.
  *
  * @param caseId - Primary key. Deleting an unknown id is a no-op, not an error.

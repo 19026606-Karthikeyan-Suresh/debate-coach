@@ -1,8 +1,8 @@
 //! Debate Coach desktop shell.
 //!
 //! Phase 1 wired the window and the local database; phase 5 added audio capture and the whisper
-//! sidecar; phase 6 added the post-speech pass the report is built from; phase 7 adds the
-//! Anthropic proxy. The sync queue lands in a later phase as a sibling module.
+//! sidecar; phase 6 added the post-speech pass the report is built from; phase 7 the Anthropic
+//! proxy; phase 8 the export path. The sync queue lands in a later phase as a sibling module.
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
@@ -10,6 +10,7 @@
 pub mod audio;
 pub mod coach;
 pub mod db;
+pub mod export;
 pub mod whisper;
 
 /// Boots the Tauri application and blocks until the window closes.
@@ -25,6 +26,7 @@ pub fn run() {
                 .add_migrations(db::DB_URL, db::migrations())
                 .build(),
         )
+        .plugin(tauri_plugin_dialog::init())
         // One recording slot for the whole app. A second speech cannot start while one is open,
         // which is enforced here by there being nowhere to put it.
         .manage(whisper::SpeechState::default())
@@ -40,6 +42,8 @@ pub fn run() {
             coach::save_coach_key,
             coach::clear_coach_key,
             coach::run_coach_request,
+            export::write_export_file,
+            export::read_case_file,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

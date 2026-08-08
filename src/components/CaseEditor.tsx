@@ -21,6 +21,7 @@ import { usePrepTimer } from '../hooks/usePrepTimer.ts'
 import { CoachPanel } from './CoachPanel.tsx'
 import { CompletenessMeter } from './CompletenessMeter.tsx'
 import { DepthPanel } from './DepthPanel.tsx'
+import { ExportPanel } from './ExportPanel.tsx'
 import { PrepTimer } from './PrepTimer.tsx'
 import { SectionNav } from './SectionNav.tsx'
 import { SectionView } from './SectionView.tsx'
@@ -204,6 +205,8 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
             update={update}
           />
         )}
+
+        <ExportPanel caseFile={caseFile} role={role} />
 
         <label className="flex items-center gap-2 text-sm">
           <input

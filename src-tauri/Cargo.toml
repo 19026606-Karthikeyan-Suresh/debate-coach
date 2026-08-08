@@ -23,6 +23,10 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
+# The OS save and open dialogs, for phase 8's export path. The bytes themselves are written by
+# `export.rs` rather than by `tauri-plugin-fs`, whose scope is a declared path allowlist — see
+# that module for why two extension-checked commands beat granting the webview a disk scope.
+tauri-plugin-dialog = "2"
 # `sqlite` feature only — the postgres and mysql backends pull in a large dependency tree
 # and the local store is always SQLite.
 tauri-plugin-sql = { version = "2.4.0", features = ["sqlite"] }
