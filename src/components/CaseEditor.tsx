@@ -16,7 +16,9 @@ import { setSeat, setVisibility } from '../case/update.ts'
 import { useAnalysis } from '../hooks/useAnalysis.ts'
 import type { SaveStatus } from '../hooks/useCaseStore.ts'
 import { useCaseStore } from '../hooks/useCaseStore.ts'
+import { useCoach } from '../hooks/useCoach.ts'
 import { usePrepTimer } from '../hooks/usePrepTimer.ts'
+import { CoachPanel } from './CoachPanel.tsx'
 import { CompletenessMeter } from './CompletenessMeter.tsx'
 import { DepthPanel } from './DepthPanel.tsx'
 import { PrepTimer } from './PrepTimer.tsx'
@@ -63,6 +65,10 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
 
   const findings = useAnalysis(caseFile, role)
   const findingsByPath = useMemo(() => groupFindingsByPath(findings), [findings])
+
+  // Layer B. Held here rather than inside the panel so a call survives the panel rerendering on
+  // every keystroke, and so the key status is read once per open rather than once per section.
+  const coach = useCoach()
 
   const activeSection =
     sections.find((section) => section.id === pendingSectionId) ?? sections[0] ?? null
@@ -189,6 +195,15 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
         <CompletenessMeter completeness={completeness} />
         <PrepTimer timer={timer} completeness={completeness} />
         <DepthPanel findings={findings} sections={sections} onSelect={revealField} />
+        {role && (
+          <CoachPanel
+            caseFile={caseFile}
+            role={role}
+            activeSectionId={activeSection?.id ?? ''}
+            coach={coach}
+            update={update}
+          />
+        )}
 
         <label className="flex items-center gap-2 text-sm">
           <input

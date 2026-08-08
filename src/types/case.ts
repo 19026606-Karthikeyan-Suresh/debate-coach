@@ -211,12 +211,18 @@ export const POLICY_LABELS: Readonly<Record<keyof PolicyBlock, string>> = {
  *
  * Not in the docx — this is the `attack` feature's output surface (phase 7). Kept on the
  * substantive so a preempt travels with the argument it defends.
+ *
+ * Deliberately outside `buildSections`, and therefore outside both the analyzer and the
+ * completeness meter. Counting an unanswered Claude attack against completeness would mean
+ * asking for help lowers your score, and firing an analyzer rule on an empty `response` would
+ * break Layer A's own rule that no heuristic ever fires on an empty field. The coach panel
+ * counts the unanswered ones instead.
  */
 export interface Preempt {
   readonly id: string
   /** The attack, phrased as an opponent would say it. */
   attack: string
-  /** My answer. Empty means the attack is unanswered — the depth panel flags it. */
+  /** My answer. Empty means the attack is unanswered; the coach panel counts those. */
   response: string
   /** Where the attack came from. Offline heuristics cannot generate these. */
   source: 'claude' | 'manual'

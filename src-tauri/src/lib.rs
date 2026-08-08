@@ -1,13 +1,14 @@
 //! Debate Coach desktop shell.
 //!
 //! Phase 1 wired the window and the local database; phase 5 added audio capture and the whisper
-//! sidecar; phase 6 adds the post-speech pass the report is built from. The Anthropic proxy and
-//! the sync queue land in later phases as sibling modules.
+//! sidecar; phase 6 added the post-speech pass the report is built from; phase 7 adds the
+//! Anthropic proxy. The sync queue lands in a later phase as a sibling module.
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
 pub mod audio;
+pub mod coach;
 pub mod db;
 pub mod whisper;
 
@@ -35,6 +36,10 @@ pub fn run() {
             whisper::retranscribe_speech,
             whisper::speech_sample_rate,
             audio::find_recording_pauses,
+            coach::coach_status,
+            coach::save_coach_key,
+            coach::clear_coach_key,
+            coach::run_coach_request,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
