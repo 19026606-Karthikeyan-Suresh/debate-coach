@@ -111,7 +111,11 @@ export interface CompiledScript {
  *
  * A competitive parliamentary speaker runs fast — 160 is the middle of the range you actually
  * hear in a round, and reading at 120 would tell every debater their case is far too short.
- * A placeholder until phase 6 has measured this debater's own pace across sessions.
+ *
+ * Still a constant now that phase 6 measures the real thing. `SessionMetrics.wordsPerMinute`
+ * holds this debater's own pace per session, and substituting it here would make the script's
+ * "6:38" mean something different on every machine and after every speech. That is a change to
+ * what the estimate *is*, not a better number for it, and it wants deciding rather than doing.
  */
 export const SPEAKING_WORDS_PER_MINUTE = 160
 

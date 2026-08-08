@@ -71,6 +71,8 @@ comments(id, session_id, author_id, t_seconds, body)     -- coach feedback ancho
 
 `ydoc_state` is persisted periodically so someone joining a co-prep room late gets the document without a peer online. `comments` is the payoff for uploading recordings — a coach scrubs to 4:12 and leaves a note there.
 
+**One column was added locally and is deliberately not in the list above.** Phase 6's migration 2 gives the local `sessions` a `report TEXT`, and the split is by what leaves the machine: `metrics` is a dozen numbers — skip rate, filler rate, pace — and is what phase 9 replicates so a squad can see each other's trends; `report` is the detail behind them, including the transcript and every skipped clause the debater wrote. That is a recording of somebody speaking, held in text, and it stays local until there is an explicit reason for it not to. Phase 9 decides whether the Postgres side gets the column at all.
+
 ---
 
 ## Part 1 — Case Builder
@@ -281,6 +283,28 @@ Scrolling and the active-segment highlight both had to be made instant: see the 
 - **Playback with comments** — scrub the recording, and a coach's timestamped notes appear inline.
 - **Session history** charts skip rate, filler rate, and pace across sessions, mine and the team's.
 
+#### What the build settled — the report (`src/speech/report.ts`, `metrics.ts`, `fillers.ts`)
+
+**There are two reports for one speech, and the order they arrive in is the design.** The live one is built from the `base.en` transcript the teleprompter was already following and is on screen the moment the speaker sits down; the `small.en` one replaces it minutes later. A report that only appears when the accurate pass finishes is a report nobody reads, because by then the round has moved on. The session row is written with the live one, so a crash during the re-pass costs the accurate numbers rather than the speech.
+
+They do not agree, and the UI says so on every screen that shows either. Filler counts especially: the better model transcribes more disfluencies, so **a filler count is a floor rather than a total**, and the history screen charts only the sessions that have been through the review pass — plotting a `base.en` number beside a `small.en` one draws a trend out of the model rather than out of the speaker.
+
+**Only the review pass has timings, and that is structural rather than an omission.** The live path decodes a rolling window and slides past it, so a timestamp from one window means nothing once the window has moved. `small.en` decodes the whole recording once in one frame of reference. Everything that needs a clock — pauses, per-section durations, the pace chart — therefore exists only after it, and everything that does not — which words were skipped, what was improvised, how many fillers — works identically without it. Both are the same `SpeechTimeline` type with `hasTimings` false on one, so nothing downstream branches on which pass it has.
+
+**Word times are interpolated across their segment, not measured.** whisper-cli times segments, and a segment is a clause. So a word's time is good to about the length of the clause holding it — enough for "the rebuttal ran ninety seconds" and for putting a filler in the right part of the speech, not enough to claim a word was said at 2:14.3. Nothing in the report claims that.
+
+**Pauses are measured off the samples.** Reading the gaps between whisper's segments is the obvious implementation and it does not work: the segments it prints are usually flush, one ending exactly where the next begins, so a pause the speaker really took comes back as no gap at all. `find_pauses` in `audio.rs` takes an adaptive threshold from the recording's own quiet tenth and loud tenth — a fixed one is either above a laptop microphone's hiss or below a quiet speaker, never both — and reports only silence *between* speech, because the quiet before the first word is the walk to the lectern.
+
+**A skipped run never crosses a field.** Sixteen consecutive red words are one dropped clause and the report says so, but two adjacent clauses from different rows stay separate however contiguous the script made them, because the whole question the report answers is which row to go and fix. Each run carries the row's **label as well as its path**, copied in at build time: a report is opened against a case that has since been rewritten or deleted, and "the row that used to be at this path" cannot be resolved then.
+
+**Nothing is written back into the case without being asked.** An improvisation's field is a guess — the token it was heard at, or the nearest one behind it in the same segment that came from a field — and a guess does not get to edit a case unasked. The report offers the row by name and the debater presses the button.
+
+**`alignSpeech` could not align a real speech, and the report is what found it.** One `advanceAlignment` is bounded by `scriptWindow`, so a single call against a 1000-word script reached the first 160 words and classified the other 900 as skipped with the whole transcript improvised. The anchor only moves when a commit is taken and a commit only happens on an advance, so the script has to be walked by advancing repeatedly — which is exactly what the live path does. `alignSpeech` now replays in chunks. Every phase 5 test used a script short enough to fit one window, which is why it survived a phase.
+
+**Two commands were running on the main thread.** `retranscribe_speech` is minutes of CPU and `stop_speech_session` blocks on the worker's final flush; both are `#[tauri::command(async)]` now. Phase 5 never called either with a real model behind it, so neither had ever blocked anything.
+
+**Deliberately not built here.** Playback is phase 10, with the coach comments it exists for — the WAV is kept and its path is on the session row, but there is no scrubber. And `SPEAKING_WORDS_PER_MINUTE` is still 160 rather than this debater's own measured pace: the sessions now hold the number, but feeding it back into the compiler's length estimate would make the script's "6:38" mean something different on every machine and after every speech, and that wants deciding rather than doing quietly.
+
 ### Free-speech mode
 
 No script loaded: transcribe an opponent's speech, then optionally have Claude flow it into the rebuttal-table structure. Doubles as a live-flowing tool.
@@ -337,12 +361,15 @@ src/
   speech/capture.ts        mic -> 16 kHz mono PCM16, drift-free resampler
   speech/transcript.ts     word splitting, interim merge, pace (pure)
   speech/timer.ts          speech clock + edge-triggered knocks (pure)
-  speech/fillers.ts, metrics.ts        deferred to phase 6 with the report
+  speech/fillers.ts        guarded filler lexicon (pure)
+  speech/metrics.ts        word timeline, pace series, SessionMetrics (pure)
+  speech/report.ts         skipped runs, section table, SpeechReport (pure)
+  hooks/useSpeechReview.ts live report, small.en re-pass, session row
   components/              CaseEditor, SectionView, TemplateTable, FieldEditor,
                            SectionNav, SeatPicker, PrepTimer, CompletenessMeter,
                            Library, DepthPanel, TeamSetup
   components/speech/       SpeechView, Teleprompter, SpeechTimer, LiveTranscript,
-                           SpeechReport, Playback, SessionHistory
+                           SpeechReport, SessionHistory, Playback (phase 10)
   export/docx.ts, dbcase.ts, speechSheet.tsx
   **/__tests__/*.test.ts
 ```
@@ -355,8 +382,8 @@ src/
 3. ~~Analyzer Layer A~~ — done
 4. ~~Script compiler~~ *(the hinge — landed before any speech UI)* — done
 5. ~~Whisper sidecar + aligner + teleprompter + timer~~ — done
-6. Report + session history ← **next**
-7. Claude Layer B
+6. ~~Report + session history~~ — done
+7. Claude Layer B ← **next**
 8. Export + `.docx` / `.dbcase`
 9. Supabase: schema, RLS, invite-code join, library sync, recording upload
 10. Coach comments on recordings
@@ -499,7 +526,7 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
 
 ## Verification
 
-1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 563 tests across 22 files, alongside `cargo test` at 12.
+1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 624 tests across 25 files, alongside `cargo test` at 20.
 2. **Regression fixture from real work.** Seed the fake-news case from my friend's filled example (`reference/template-filled-example.docx`). It has genuine, checkable defects the analyzer must catch:
    - `subOverlap` flags Sub 1 ("fake news causes irreparable damage") against Sub 2 ("allowing the spread is supporting it") — they share most of their content vocabulary.
    - `vagueness` flags "damages lives", "individuals in society", "many damages".
@@ -508,8 +535,8 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
 3. **Script compiler against the template.** Every phrase the compiler claims is the template's is looked back up in `reference/template-blank.docx`, and every slot resolves to a row the editor actually renders — both directions, so a template row that is never spoken has to be listed as deliberate. A completely filled case, for all fourteen seats across both formats, compiles with an empty `gaps`.
 4. **Aligner tests without a microphone** — synthetic transcripts against a known script: verbatim, dropped clause, improvised insertion, homophone (`their`/`there`), restarted sentence, jump from Sub 1 to Sub 3. Assert exact skipped/added token sets. **Done** — all six are in `align.test.ts`, plus a dropped run of transcript, a filler storm, a speaker who abandons the script, and a check that streaming in chunks of 1, 2, 5 and 13 words reaches the same answer as one call.
 5. `npm run tauri dev` → build a case end-to-end: BP + CG, fill Sub 1, confirm inline underlines and depth-panel findings appear.
-6. **Whisper sidecar check** — `base.en` transcribes live with the teleprompter keeping pace during fast delivery; the `small.en` post-pass produces a different and better transcript that the report is built from. **Not yet run**: needs `scripts/fetch-whisper.ps1` and a microphone. Phase 5 covered the parts that can be checked without either — the stdout parser and the window-commit logic by unit test, the teleprompter and timer by driving them against a synthetic delivery.
-7. Deliberately skip a sentence mid-speech; confirm it strikes through live and lands in the report linked to its case field. **Half done**: a synthetic delivery that drops nine words strikes through exactly those nine and nothing else, verified in the running UI. The report half is phase 6.
+6. **Whisper sidecar check** — `base.en` transcribes live with the teleprompter keeping pace during fast delivery; the `small.en` post-pass produces a different and better transcript that the report is built from. **Still not run**: needs `scripts/fetch-whisper.ps1` and a microphone, and it is now the only thing standing between the speech half of the app and being finished. Phases 5 and 6 covered everything checkable without either — the stdout parser, the window-commit logic and the pause detector by unit test, the teleprompter, timer and report by driving them against a synthetic delivery. What only a microphone can settle: whether `base.en` keeps up on a laptop at speaking pace, and whether the two transcripts differ enough to justify the re-pass at all.
+7. Deliberately skip a sentence mid-speech; confirm it strikes through live and lands in the report linked to its case field. **Done.** A synthetic delivery that drops nine words strikes through exactly those nine and nothing else in the running UI, and a delivery that drops a whole row comes back in the report as one clause naming `substantives.sub-1.whyBad` — rendered as the template's own question, "Why is the problem so bad?". Pinned by `report.test.ts` against the real compiled fixture, not a hand-made script.
 8. **Offline test** — disable networking entirely. Case building, analysis, transcription, alignment, and reporting all still work; edits queue and drain on reconnect. Only the Claude button and library refresh degrade.
 9. `npm run tauri build` → install the `.msi` on a second machine with no dev tools; confirm speech capture works with zero setup.
 10. With an API key saved: run `attack` on a substantive, confirm three opposition responses come back and that no returned field contains a written-out argument for my own motion.
