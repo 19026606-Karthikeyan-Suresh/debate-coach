@@ -16,7 +16,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { AlignmentState } from '../speech/align.ts'
 import { advanceAlignment, createAlignment } from '../speech/align.ts'
-import type { SpeechRecording, TranscriptionSource } from '../speech/recognition.ts'
+import type {
+  SpeechRecording,
+  TranscriptionSource,
+  TranscriptionSourceId,
+} from '../speech/recognition.ts'
 import { createTranscriptionSource } from '../speech/recognition.ts'
 import { transcriptWords } from '../speech/transcript.ts'
 
@@ -26,10 +30,19 @@ export type SpeechStatus = 'idle' | 'starting' | 'recording' | 'stopping' | 'fin
 /** A speech in progress, or one that has just finished. */
 export interface SpeechSession {
   readonly status: SpeechStatus
+  /**
+   * Id of the speech that is running, or of the last one that ran. Null before the first.
+   *
+   * Minted by `start`, not by the caller: it names the WAV and the `sessions` row, and a screen
+   * that held one id for its lifetime would have a second speech overwrite the first one's report.
+   */
+  readonly sessionId: string | null
   /** Populated only when `status` is `error`. */
   readonly error: string | null
   /** Which recogniser is running, once one has been chosen. */
   readonly sourceLabel: string | null
+  /** Which engine produced the transcript. Stored on the session row, since the numbers differ. */
+  readonly sourceId: TranscriptionSourceId | null
   /** Why the browser fallback is being used, or null when whisper is. */
   readonly fallbackReason: string | null
   /** Every script word and what became of it. Drives the teleprompter. */
@@ -53,16 +66,14 @@ export interface SpeechSession {
  *   `compiled.tokens.map((token) => token.text)`. **Must be referentially stable** — memoize it.
  *   A new array identity resets the alignment, which is correct when the case was edited and
  *   destructive if it happens every render.
- * @param sessionId - Names the recording on disk. Stable for the life of the screen.
  * @returns The session.
  */
-export function useSpeechSession(
-  scriptWords: readonly string[],
-  sessionId: string,
-): SpeechSession {
+export function useSpeechSession(scriptWords: readonly string[]): SpeechSession {
   const [status, setStatus] = useState<SpeechStatus>('idle')
+  const [sessionId, setSessionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sourceLabel, setSourceLabel] = useState<string | null>(null)
+  const [sourceId, setSourceId] = useState<TranscriptionSourceId | null>(null)
   const [fallbackReason, setFallbackReason] = useState<string | null>(null)
   const [transcript, setTranscript] = useState('')
   const [audioSeconds, setAudioSeconds] = useState(0)
@@ -103,10 +114,16 @@ export function useSpeechSession(
     setAudioSeconds(0)
     setAlignment(createAlignment(scriptWords))
 
-    createTranscriptionSource(sessionId)
+    // A new id per speech, so a second speech on the same screen writes a second session row
+    // rather than overwriting the first one's report.
+    const startingId = crypto.randomUUID()
+    setSessionId(startingId)
+
+    createTranscriptionSource(startingId)
       .then(async (choice) => {
         sourceRef.current = choice.source
         setSourceLabel(choice.source.label)
+        setSourceId(choice.source.id)
         setFallbackReason(choice.fallbackReason)
 
         await choice.source.start((update) => {
@@ -121,7 +138,7 @@ export function useSpeechSession(
         setError(startError instanceof Error ? startError.message : String(startError))
         setStatus('error')
       })
-  }, [scriptWords, sessionId])
+  }, [scriptWords])
 
   const stop = useCallback((): void => {
     const source = sourceRef.current
@@ -145,8 +162,10 @@ export function useSpeechSession(
 
   return {
     status,
+    sessionId,
     error,
     sourceLabel,
+    sourceId,
     fallbackReason,
     alignment,
     transcript,

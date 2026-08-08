@@ -17,12 +17,20 @@ pub const DB_URL: &str = "sqlite:debate-coach.db";
 /// reused with different SQL after it has run on a machine — versions are append-only.
 /// Never edit a shipped migration; add the next one.
 pub fn migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        description: "core case, motion, session, comment and sync tables",
-        sql: INITIAL_SCHEMA,
-        kind: MigrationKind::Up,
-    }]
+    vec![
+        Migration {
+            version: 1,
+            description: "core case, motion, session, comment and sync tables",
+            sql: INITIAL_SCHEMA,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "speech report detail alongside the syncable metrics",
+            sql: SESSION_REPORT,
+            kind: MigrationKind::Up,
+        },
+    ]
 }
 
 // `cases.doc` holds the whole filled template as JSON — the plain-object projection of the
@@ -116,4 +124,17 @@ CREATE TABLE IF NOT EXISTS sync_queue (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sync_queue_queued_at ON sync_queue(queued_at);
+"#;
+
+// Two columns for one speech, split by what leaves the machine.
+//
+// `metrics` is a dozen numbers — skip rate, filler rate, pace — and it is what phase 9 syncs, so
+// a squad can see each other's trends. `report` is the detail those numbers came from: the
+// transcript, every skipped run with the case field it belongs to, the improvisations, the
+// pauses. That is a recording of somebody speaking, held in text, and it stays local until there
+// is an explicit reason for it not to.
+//
+// `SELECT *` on `sessions` is never used, so an added column cannot surprise a reader of a row.
+const SESSION_REPORT: &str = r#"
+ALTER TABLE sessions ADD COLUMN report TEXT;
 "#;

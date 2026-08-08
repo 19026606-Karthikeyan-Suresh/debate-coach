@@ -2,13 +2,14 @@ import { useState } from 'react'
 
 import { CaseEditor } from './components/CaseEditor.tsx'
 import { Library } from './components/Library.tsx'
+import { SessionHistory } from './components/speech/SessionHistory.tsx'
 import { SpeechView } from './components/speech/SpeechView.tsx'
 
 /**
  * App shell.
  *
- * Three screens, matching the mockup: the library, Prep, and Speak. Review arrives with the
- * report in phase 6 — there is nothing to review until a session has been stored.
+ * Four screens now: the library, Prep, Speak, and Review — the last of which only became worth
+ * having once phase 6 gave it something to list.
  *
  * Deliberately not a router. A desktop shell has no URL to deep-link into, and the two case
  * screens are mutually exclusive: leaving Prep unmounts the editor, which flushes its pending
@@ -20,11 +21,29 @@ export function App(): React.JSX.Element {
   // Case id being worked on, or null for the library.
   const [openCaseId, setOpenCaseId] = useState<string | null>(null)
   const [isSpeaking, setIsSpeaking] = useState(false)
+  const [isReviewing, setIsReviewing] = useState(false)
+
+  if (isReviewing) {
+    return (
+      <div className="app-surface h-full">
+        <SessionHistory
+          onClose={() => {
+            setIsReviewing(false)
+          }}
+        />
+      </div>
+    )
+  }
 
   if (openCaseId === null) {
     return (
       <div className="app-surface h-full">
-        <Library onOpen={setOpenCaseId} />
+        <Library
+          onOpen={setOpenCaseId}
+          onReview={() => {
+            setIsReviewing(true)
+          }}
+        />
       </div>
     )
   }

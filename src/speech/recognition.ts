@@ -16,6 +16,7 @@ import { listen } from '@tauri-apps/api/event'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 
 import { MicrophoneCapture } from './capture.ts'
+import type { Pause, TranscriptSegment } from './metrics.ts'
 import { mergeSpeechResults } from './transcript.ts'
 import type { SpeechResult } from './transcript.ts'
 
@@ -96,19 +97,46 @@ export async function readWhisperStatus(): Promise<WhisperStatus> {
   }
 }
 
+/** The accurate transcript and the timings only the post-speech pass has. */
+export interface ReviewTranscript {
+  /** Every segment's text, joined by single spaces. */
+  readonly text: string
+  /** The same words, still carrying the times they were said at. */
+  readonly segments: readonly TranscriptSegment[]
+}
+
 /**
  * Re-transcribes a finished recording with `small.en`.
  *
- * The accurate pass. `base.en` is chosen live because it keeps up, not because it is right, and
- * phase 6 rebuilds the report's numbers from this transcript instead.
+ * The accurate pass, and the one the report's numbers are built from. `base.en` is chosen live
+ * because it keeps up, not because it is right.
+ *
+ * Minutes of CPU on a seven-minute speech, which is why the Rust side runs it off the main
+ * thread and why the UI is expected to show the live report first and swap this one in.
  *
  * @param wavPath - As returned by `stop`. A path from anywhere else is not guaranteed to be
  *   16 kHz mono, and whisper transcribes anything else as noise.
- * @returns The transcript as one string.
+ * @returns The transcript, and the segments the timeline is built from.
  * @throws If whisper is unavailable or the decode fails.
  */
-export function retranscribe(wavPath: string): Promise<string> {
-  return invoke<string>('retranscribe_speech', { wavPath })
+export function retranscribe(wavPath: string): Promise<ReviewTranscript> {
+  return invoke<ReviewTranscript>('retranscribe_speech', { wavPath })
+}
+
+/**
+ * Finds the silences in a finished recording.
+ *
+ * Measured off the samples rather than off the transcript — whisper's segment timestamps are
+ * usually flush against each other, so a pause the speaker really took shows up as no gap at all.
+ *
+ * @param wavPath - As returned by `stop`.
+ * @param minSeconds - Shortest gap to report. Omit for two seconds, which is roughly where a
+ *   pause stops reading as emphasis and starts reading as lost.
+ * @returns The pauses in order. Empty for a recording with no speech in it.
+ * @throws If the file cannot be read or is not 16 kHz mono.
+ */
+export function findRecordingPauses(wavPath: string, minSeconds?: number): Promise<Pause[]> {
+  return invoke<Pause[]>('find_recording_pauses', { wavPath, minSeconds })
 }
 
 /**

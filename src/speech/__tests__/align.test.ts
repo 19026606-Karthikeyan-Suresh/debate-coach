@@ -150,10 +150,17 @@ const longScript = ['alpha', 'beta', 'gamma'].flatMap((label) =>
 describe('a speaker who jumps to another substantive', () => {
   const spoken = [...longScript.slice(0, 20), ...longScript.slice(200, 260)]
 
+  it('reports the advance that had to widen its search', () => {
+    // `reAnchored` describes one advance, not the speech, so it is read on the advance that
+    // jumps. Asserting it on the end state of a replay reads whatever the last chunk did.
+    const beforeJump = advanceAlignment(createAlignment(longScript), spoken.slice(0, 20))
+    expect(beforeJump.reAnchored).toBe(false)
+    expect(advanceAlignment(beforeJump, spoken).reAnchored).toBe(true)
+  })
+
   it('finds them again and marks what they jumped over', () => {
     const state = alignSpeech(longScript, spoken)
 
-    expect(state.reAnchored).toBe(true)
     expect(tokensWithStatus(state, 'spoken')).toHaveLength(80)
     expect(tokensWithStatus(state, 'skipped')).toHaveLength(180)
     expect(tokensWithStatus(state, 'pending')).toHaveLength(40)

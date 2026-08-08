@@ -17,6 +17,8 @@ import { createEmptyCase } from '../types/createCase.ts'
 export interface LibraryProps {
   /** Opens a case in the editor. */
   readonly onOpen: (caseId: string) => void
+  /** Opens the session history. */
+  readonly onReview: () => void
 }
 
 /**
@@ -24,9 +26,10 @@ export interface LibraryProps {
  *
  * @param props - See {@link LibraryProps}.
  * @param props.onOpen - Called with the id of the case to open.
+ * @param props.onReview - Called to open the Review screen.
  * @returns The library screen.
  */
-export function Library({ onOpen }: LibraryProps): React.JSX.Element {
+export function Library({ onOpen, onReview }: LibraryProps): React.JSX.Element {
   const [cases, setCases] = useState<CaseSummary[]>([])
   const [error, setError] = useState<string | null>(null)
   const [newFormat, setNewFormat] = useState<FormatId>('AP')
@@ -90,11 +93,16 @@ export function Library({ onOpen }: LibraryProps): React.JSX.Element {
 
   return (
     <main className="mx-auto flex h-full max-w-3xl flex-col gap-6 overflow-y-auto p-8">
-      <header>
-        <h1 className="text-2xl font-semibold">Debate Coach</h1>
-        <p className="text-sm text-neutral-500 dark:text-neutral-400">
-          Cases are stored on this machine. Nothing leaves it yet.
-        </p>
+      <header className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Debate Coach</h1>
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">
+            Cases are stored on this machine. Nothing leaves it yet.
+          </p>
+        </div>
+        <button type="button" className="btn" onClick={onReview}>
+          Review speeches
+        </button>
       </header>
 
       <section className="panel flex flex-wrap items-end gap-2 p-4">
