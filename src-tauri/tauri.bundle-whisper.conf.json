@@ -1,7 +1,21 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "bundle": {
-    "externalBin": ["binaries/whisper-cli"],
+    "externalBin": [
+      "binaries/whisper-cli",
+      "binaries/ggml",
+      "binaries/ggml-base",
+      "binaries/ggml-cpu-alderlake",
+      "binaries/ggml-cpu-cannonlake",
+      "binaries/ggml-cpu-cascadelake",
+      "binaries/ggml-cpu-haswell",
+      "binaries/ggml-cpu-icelake",
+      "binaries/ggml-cpu-sandybridge",
+      "binaries/ggml-cpu-skylakex",
+      "binaries/ggml-cpu-sse42",
+      "binaries/ggml-cpu-x64",
+      "binaries/whisper"
+    ],
     "resources": {
       "resources/models/ggml-base.en.bin": "models/ggml-base.en.bin",
       "resources/models/ggml-small.en.bin": "models/ggml-small.en.bin"

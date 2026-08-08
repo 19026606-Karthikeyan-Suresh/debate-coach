@@ -321,13 +321,22 @@ describe('a full-length speech', () => {
     expect(skipRate(state)).toBeLessThan(0.02)
   })
 
-  it('reaches the same answer however the transcript is chunked', () => {
-    const delivered = FULL_SCRIPT.filter((_word, index) => index < 300 || index > 320)
-    const reference = alignSpeech(FULL_SCRIPT, delivered).tokens.map((token) => token.status)
-    for (const chunk of [7, 23, 61]) {
-      expect(streamStatuses(FULL_SCRIPT, delivered, chunk)).toEqual(reference)
-    }
-  })
+  // Four full-length alignments, three of them advance-by-advance: chunk 7 alone is 150 passes
+  // of the DP. That is genuinely seconds of work rather than a hang, and it sat close enough to
+  // vitest's 5 s default to pass alone and time out under a loaded suite — so the budget is
+  // stated rather than left to luck. Chunk 7 is not padding: at 160 words a minute and a 1.2 s
+  // tick, three to seven words per advance is exactly what the live path delivers.
+  it(
+    'reaches the same answer however the transcript is chunked',
+    () => {
+      const delivered = FULL_SCRIPT.filter((_word, index) => index < 300 || index > 320)
+      const reference = alignSpeech(FULL_SCRIPT, delivered).tokens.map((token) => token.status)
+      for (const chunk of [7, 23, 61]) {
+        expect(streamStatuses(FULL_SCRIPT, delivered, chunk)).toEqual(reference)
+      }
+    },
+    30_000,
+  )
 })
 
 describe('a speaker who abandons the script', () => {

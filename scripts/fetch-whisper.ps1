@@ -37,14 +37,19 @@ $ErrorActionPreference = 'Stop'
 # Pinned rather than "latest" for the same reason rust-toolchain.toml is: whisper.cpp changes
 # its CLI flags and its stdout format between releases, and src/whisper.rs parses both.
 #
-# v1.7.6 rather than the v1.7.4 written here in phase 5, and not by choice: **v1.7.0 through
-# v1.7.5 shipped no release assets at all.** Prebuilt Windows binaries stop after v1.6.0 and do
-# not resume until v1.7.6, so the original pin could never have worked — it was written without
-# the script ever being run. v1.7.6 is the nearest release to it that exists as a download.
+# Two facts about this repository's releases, both learned the hard way:
 #
-# The repository also moved from `ggerganov/whisper.cpp` to `ggml-org/whisper.cpp`. The GitHub
-# API follows that rename but release asset URLs do not, so the old path 404s.
-$WhisperRelease = 'v1.7.6'
+#   * **v1.7.0 through v1.7.5 shipped no release assets at all.** Prebuilt Windows binaries stop
+#     after v1.6.0 and do not resume until v1.7.6. The v1.7.4 written here in phase 5 could never
+#     have downloaded; it was pinned without the script ever being run.
+#   * The repository moved from `ggerganov/whisper.cpp` to `ggml-org/whisper.cpp`. The GitHub API
+#     follows that rename but release asset URLs do not, so the old path 404s.
+#
+# v1.9.2 is a deliberate bump from the v1.7.6 that first made this script work. Both were checked
+# against `samples/jfk.wav` with the exact flags `transcribe_wav` passes; `--no-prints` and the
+# `[hh:mm:ss.mmm --> hh:mm:ss.mmm]` stdout the parser reads survive the jump, and the existing
+# base.en and small.en weights still load, so the models did not need re-downloading.
+$WhisperRelease = 'v1.9.2'
 $BinaryUrl = "https://github.com/ggml-org/whisper.cpp/releases/download/$WhisperRelease/whisper-bin-x64.zip"
 
 # The models are still published under the personal account; only the code repo was renamed.
@@ -136,9 +141,18 @@ if ((Test-Path $targetBinary) -and -not $Force) {
   # deprecation shim that exits 1 under a name we search for, and whisper-cli dies before
   # printing anything if the ggml DLLs are not beside it — which `src/whisper.rs` can only ever
   # report as "whisper-cli failed". Run after the DLL copy above for exactly that reason.
-  # `2>$null` rather than `2>&1`: whisper-cli prints its usage to stderr, and merging a native
-  # command's stderr in PowerShell 5.1 wraps every line in an ErrorRecord.
-  & (Join-Path $AppData 'whisper-cli.exe') '--help' 2>$null | Out-Null
+  # `$ErrorActionPreference` has to come down for the probe, and `2>$null` is not enough on its
+  # own. PowerShell 5.1 wraps a native command's stderr in a NativeCommandError, which under the
+  # script-wide 'Stop' is terminating — so v1.9.2 writing "load_backend: loaded CPU backend from
+  # ggml-cpu-cascadelake.dll" to stderr killed the script on a line whose whole purpose is to
+  # decide whether something is wrong. The exit code is the thing being tested, not the chatter.
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & (Join-Path $AppData 'whisper-cli.exe') '--help' 2>$null | Out-Null
+  } finally {
+    $ErrorActionPreference = $previousPreference
+  }
   if ($LASTEXITCODE -ne 0) {
     throw ("Installed $($found.FullName) but it exits $LASTEXITCODE on --help, so it is a " +
       'deprecation stub or is missing its DLLs. The release layout changed again.')

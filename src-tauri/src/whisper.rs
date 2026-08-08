@@ -833,19 +833,24 @@ system_info: n_threads = 4
         assert!(parse_segments("no brackets here at all").is_empty());
     }
 
-    /// Captured verbatim from `whisper-cli.exe v1.7.6` on `samples/jfk.wav`, with the exact flags
+    /// Captured verbatim from `whisper-cli.exe` on `samples/jfk.wav`, with the exact flags
     /// [`transcribe_wav`] passes: `-m … -f … -t 4 --no-prints -l en`. Blank leading line and all.
     ///
-    /// Everything else in this module is a fixture somebody typed. This one is the real thing,
-    /// and it is what says the pinned release still prints what the parser reads — the fetch
-    /// script pins a version precisely so this cannot drift without somebody choosing to.
-    const REAL_V1_7_6_OUTPUT: &str = "
+    /// Byte-identical under both v1.7.6 and v1.9.2, which is the evidence that made the bump
+    /// safe. Everything else in this module is a fixture somebody typed; this one is the real
+    /// thing, and it is what says the pinned release still prints what the parser reads.
+    ///
+    /// Only **stdout** appears here. v1.9.2 added `load_backend: …` and `read_audio_data: …`
+    /// chatter that `--no-prints` does not suppress, but it goes to stderr and
+    /// [`transcribe_wav`] reads the two streams separately — which is why that addition cost
+    /// nothing.
+    const REAL_RELEASE_OUTPUT: &str = "
 [00:00:00.000 --> 00:00:11.000]   And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.
 ";
 
     #[test]
     fn reads_what_the_pinned_release_actually_prints() {
-        let segments = parse_segments(REAL_V1_7_6_OUTPUT);
+        let segments = parse_segments(REAL_RELEASE_OUTPUT);
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].start, 0.0);
         assert_eq!(segments[0].end, 11.0);
