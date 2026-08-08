@@ -107,8 +107,9 @@ export function createPointOfInformation(): PointOfInformation {
 /**
  * Builds an empty preempt with a fresh id.
  *
- * @param source - Who produced the attack. Defaults to `manual`; only phase 7's `attack`
- *   call passes `claude`, and the depth panel treats the two differently.
+ * @param source - Who produced the attack. Defaults to `manual`; only phase 7's `attack` call
+ *   passes `claude`, and the substantive's preempt list tags those so an attack the debater did
+ *   not think of is not later mistaken for one they did.
  */
 export function createPreempt(source: Preempt['source'] = 'manual'): Preempt {
   return { id: newId(), attack: '', response: '', source }

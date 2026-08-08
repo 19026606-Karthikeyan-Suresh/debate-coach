@@ -20,10 +20,12 @@ import {
   addEngagement,
   addHandledArgument,
   addPointOfInformation,
+  addPreempt,
   addSubstantive,
   ensureRequiredBlocks,
   removeEngagement,
   removePointOfInformation,
+  removePreempt,
   removeSubstantive,
   setEngagementIsExtension,
   setFieldByPath,
@@ -265,6 +267,100 @@ describe('ensureRequiredBlocks', () => {
     }
     const seeded = ensureRequiredBlocks(createEmptyCase('AP', 'gov', 'ap-pm'), role)
     expect(ensureRequiredBlocks(seeded, role)).toBe(seeded)
+  })
+})
+
+describe('preempts', () => {
+  /** A seeded AP first-speaker case, which always has exactly one substantive to hang them off. */
+  function seededCase(): Case {
+    const role = getRole('AP', 'ap-pm')
+    if (!role) {
+      throw new Error('AP is missing its PM role')
+    }
+    return ensureRequiredBlocks(createEmptyCase('AP', 'gov', 'ap-pm'), role)
+  }
+
+  it('stores the attack and leaves the answer blank whoever wrote it', () => {
+    const baseCase = seededCase()
+    const substantiveId = baseCase.substantives[0]?.id ?? ''
+    const added = addPreempt(baseCase, substantiveId, 'No regulator has ever acted.', 'claude')
+    const preempt = added.substantives[0]?.preempts[0]
+
+    expect(preempt?.attack).toBe('No regulator has ever acted.')
+    // Answering it is the exercise; an attack that arrives answered has taught nothing.
+    expect(preempt?.response).toBe('')
+    expect(preempt?.source).toBe('claude')
+  })
+
+  it('routes a preempt path through setFieldByPath like any other field', () => {
+    const baseCase = seededCase()
+    const substantiveId = baseCase.substantives[0]?.id ?? ''
+    const added = addPreempt(baseCase, substantiveId, 'Your actor cannot act.', 'claude')
+    const preemptId = added.substantives[0]?.preempts[0]?.id ?? ''
+
+    const answered = setFieldByPath(
+      added,
+      `substantives.${substantiveId}.preempts.${preemptId}.response`,
+      'It acts because the fine exceeds the ad revenue.',
+    )
+    expect(answered.substantives[0]?.preempts[0]?.response).toBe(
+      'It acts because the fine exceeds the ad revenue.',
+    )
+  })
+
+  it('refuses a preempt path that does not resolve, rather than writing nothing', () => {
+    const baseCase = seededCase()
+    const substantiveId = baseCase.substantives[0]?.id ?? ''
+    expect(() =>
+      setFieldByPath(baseCase, `substantives.${substantiveId}.preempts.gone.response`, 'x'),
+    ).toThrow(/No such item/)
+  })
+
+  /**
+   * Preempts are not in `buildSections`, so they must not reach the meter either — asking Claude
+   * for three attacks would otherwise drop a finished case from 100% to 70%.
+   */
+  it('does not count against completeness', () => {
+    const role = getRole('AP', 'ap-pm')
+    if (!role) {
+      throw new Error('AP is missing its PM role')
+    }
+    const filled = fillEverything(seededCase(), role)
+    const substantiveId = filled.substantives[0]?.id ?? ''
+    const withAttack = addPreempt(filled, substantiveId, 'Your actor cannot act.', 'claude')
+
+    expect(measureCase(withAttack, role).ratio).toBe(1)
+    expect(measureCase(withAttack, role).total).toBe(measureCase(filled, role).total)
+  })
+
+  it('drops one attack and leaves the rest', () => {
+    const baseCase = seededCase()
+    const substantiveId = baseCase.substantives[0]?.id ?? ''
+    const two = addPreempt(
+      addPreempt(baseCase, substantiveId, 'First.', 'claude'),
+      substantiveId,
+      'Second.',
+      'manual',
+    )
+    const firstId = two.substantives[0]?.preempts[0]?.id ?? ''
+
+    const remaining = removePreempt(two, substantiveId, firstId).substantives[0]?.preempts
+    expect(remaining?.map((preempt) => preempt.attack)).toEqual(['Second.'])
+  })
+})
+
+describe('predicted POIs', () => {
+  it('files the question and leaves the response for the debater', () => {
+    const added = addPointOfInformation(
+      createEmptyCase('AP', 'gov', 'ap-pm'),
+      'Who decides what counts as fake?',
+    )
+    expect(added.prep.pois[0]?.text).toBe('Who decides what counts as fake?')
+    expect(added.prep.pois[0]?.response).toBe('')
+  })
+
+  it('still adds an empty row for the editor’s own button', () => {
+    expect(addPointOfInformation(createEmptyCase('AP', 'gov', 'ap-pm')).prep.pois[0]?.text).toBe('')
   })
 })
 

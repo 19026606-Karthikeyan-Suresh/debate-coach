@@ -19,12 +19,14 @@ import {
   addHandledArgument,
   addOpposingRebuttal,
   addPointOfInformation,
+  addPreempt,
   addRebuttal,
   addSubstantive,
   removeClash,
   removeEngagement,
   removeOpposingRebuttal,
   removePointOfInformation,
+  removePreempt,
   removeRebuttal,
   removeSubstantive,
   setEngagementBranch,
@@ -32,6 +34,7 @@ import {
   setFieldByPath,
   setNeedsMechanism,
 } from '../case/update.ts'
+import { PreemptList } from './PreemptList.tsx'
 import { TemplateTable } from './TemplateTable.tsx'
 
 /** Path of the mechanism question, which gets a tri-state instead of a text box. */
@@ -80,6 +83,13 @@ export function SectionView({
 
   const itemId = section.id.split('.')[1] ?? ''
   const noun = REPEATABLE_NOUNS[section.blockId]
+
+  // Preempts hang off the substantive rather than off the section, because they are not one of
+  // the template's rows — `buildSections` does not know they exist.
+  const substantive =
+    section.blockId === 'substantives'
+      ? (caseFile.substantives.find((item) => item.id === itemId) ?? null)
+      : null
 
   return (
     <div className="flex flex-col gap-6">
@@ -144,6 +154,19 @@ export function SectionView({
           </div>
         )
       })}
+
+      {substantive && (
+        <PreemptList
+          substantive={substantive}
+          onChange={onChange}
+          onAdd={() => {
+            update((current) => addPreempt(current, substantive.id, '', 'manual'))
+          }}
+          onRemove={(preemptId) => {
+            update((current) => removePreempt(current, substantive.id, preemptId))
+          }}
+        />
+      )}
 
       <SectionFooter section={section} update={update} />
     </div>

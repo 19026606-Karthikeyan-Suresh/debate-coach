@@ -18,6 +18,7 @@ import type {
   ClashEngagement,
   MechanismDecision,
   OpponentResponseBranch,
+  Preempt,
   Visibility,
 } from '../types/case.ts'
 import {
@@ -29,6 +30,7 @@ import {
   createOverlapEngagement,
   createPointOfInformation,
   createPolicyBlock,
+  createPreempt,
   createRebuttalBlock,
   createSubstantive,
   createTheirArgumentEngagement,
@@ -130,7 +132,7 @@ export function setNeedsMechanism(caseFile: Case, decision: MechanismDecision): 
  * @throws If the path names a block, item, or field that does not exist.
  */
 export function setFieldByPath(caseFile: Case, path: string, value: string): Case {
-  const [blockId, second, third, fourth] = path.split('.')
+  const [blockId, second, third, fourth, fifth] = path.split('.')
 
   switch (blockId) {
     case 'prep': {
@@ -210,6 +212,27 @@ export function setFieldByPath(caseFile: Case, path: string, value: string): Cas
       break
 
     case 'substantives':
+      // Preempts are not in `buildSections`, so no path here comes from the projection — the
+      // preempt list builds them itself. They are routed through the same door anyway, so an
+      // answer to an anticipated attack saves and stamps `updatedAt` exactly like a template row.
+      if (second !== undefined && third === 'preempts' && fourth !== undefined && fifth !== undefined) {
+        return touched(caseFile, {
+          substantives: replaceById(
+            caseFile.substantives,
+            second,
+            (substantive) => ({
+              ...substantive,
+              preempts: replaceById(
+                substantive.preempts,
+                fourth,
+                (preempt) => replaceField(preempt, fifth, value, path),
+                path,
+              ),
+            }),
+            path,
+          ),
+        })
+      }
       if (second !== undefined && third !== undefined) {
         return touched(caseFile, {
           substantives: replaceById(
@@ -492,10 +515,21 @@ export function removeOpposingRebuttal(caseFile: Case, opposingId: string): Case
   })
 }
 
-/** Appends an empty POI to the prep sheet's list. */
-export function addPointOfInformation(caseFile: Case): Case {
+/**
+ * Appends a POI to the prep sheet's list.
+ *
+ * @param caseFile - The case being edited.
+ * @param text - The POI as it would be asked. Defaults to empty for the editor's "Add POI"
+ *   button; Layer B passes the question it predicted. The response is always left blank — a
+ *   predicted POI with a predicted answer is not preparation.
+ * @returns The updated case.
+ */
+export function addPointOfInformation(caseFile: Case, text = ''): Case {
   return touched(caseFile, {
-    prep: { ...caseFile.prep, pois: [...caseFile.prep.pois, createPointOfInformation()] },
+    prep: {
+      ...caseFile.prep,
+      pois: [...caseFile.prep.pois, { ...createPointOfInformation(), text }],
+    },
   })
 }
 
@@ -508,6 +542,63 @@ export function addPointOfInformation(caseFile: Case): Case {
 export function removePointOfInformation(caseFile: Case, poiId: string): Case {
   return touched(caseFile, {
     prep: { ...caseFile.prep, pois: caseFile.prep.pois.filter((item) => item.id !== poiId) },
+  })
+}
+
+/**
+ * Adds an anticipated attack to a substantive.
+ *
+ * The response is always left blank, whoever produced the attack. Answering it is the exercise —
+ * an attack that arrives with its own rebuttal has taught the debater nothing they can say in a
+ * round, which is why Layer B's schema has nowhere to put one.
+ *
+ * @param caseFile - The case being edited.
+ * @param substantiveId - Substantive the attack lands on.
+ * @param attack - The attack, phrased as the other bench would say it.
+ * @param source - Who produced it. `claude` is tagged in the list so a suggestion is never later
+ *   mistaken for something the debater thought of.
+ * @returns The updated case.
+ * @throws If the substantive id does not resolve.
+ */
+export function addPreempt(
+  caseFile: Case,
+  substantiveId: string,
+  attack: string,
+  source: Preempt['source'],
+): Case {
+  return touched(caseFile, {
+    substantives: replaceById(
+      caseFile.substantives,
+      substantiveId,
+      (substantive) => ({
+        ...substantive,
+        preempts: [...substantive.preempts, { ...createPreempt(source), attack }],
+      }),
+      substantiveId,
+    ),
+  })
+}
+
+/**
+ * Drops one anticipated attack.
+ *
+ * @param caseFile - The case being edited.
+ * @param substantiveId - Substantive holding it.
+ * @param preemptId - Which to remove. An unknown id is a no-op.
+ * @returns The updated case.
+ * @throws If the substantive id does not resolve.
+ */
+export function removePreempt(caseFile: Case, substantiveId: string, preemptId: string): Case {
+  return touched(caseFile, {
+    substantives: replaceById(
+      caseFile.substantives,
+      substantiveId,
+      (substantive) => ({
+        ...substantive,
+        preempts: substantive.preempts.filter((item) => item.id !== preemptId),
+      }),
+      substantiveId,
+    ),
   })
 }
 

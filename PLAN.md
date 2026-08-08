@@ -199,6 +199,26 @@ Activates when an Anthropic API key has been saved to the OS keychain. Uses **`c
 
 **The Socratic constraint is enforced structurally.** Requests use `output_config.format` with a JSON schema whose only fields are questions and missing-axis labels — no free-prose field the model could write my argument into. A validation pass rejects responses whose question strings exceed a length threshold or contain first-person argumentative phrasing.
 
+#### What the build settled — `src-tauri/src/coach.rs` and `src/coach/`
+
+**The split is key in Rust, words in TypeScript.** Rust owns the API key and the wire shape — model, `max_tokens`, `output_config.effort`, that a schema is always attached, that a refusal is not read as content. TypeScript owns the prompt, the schema and the validator. The security property that actually matters is that the key never reaches the webview, and that holds however the frontend words its prompt; what the split buys is that the Socratic constraint is three pure modules vitest can red-team with no process boundary and no key in the loop. `build_body` is separate from the send for the same reason on the other side: every constant that would otherwise only be checked by a live call is pinned by `cargo test`.
+
+**`keyring`, not `tauri-plugin-stronghold`.** Stronghold is an encrypted snapshot file that needs a password to unlock, so it is either a second password every launch or a hardcoded one — and a hardcoded password over an encrypted file is a file. Windows already has a per-user secret store the OS unlocks at login. `coach_status` reports which backend it actually got and whether it survives a quit, because on a platform without one `keyring` falls back to an in-memory store and a settings box that says "saved" would be lying.
+
+**Three tasks, one exception to the rule.** `audit` and `poi` may only return questions, and the validator additionally requires them to end in a question mark — a structural test that is cheap and impossible to satisfy accidentally while writing prose. `attack` returns the opposition's own line, which is prose and is not a question. That is the exception the fence is built around rather than a hole in it: an opposition attack is the *other* side's argument, and writing it out is exactly what makes it answerable. There is no field beside it for how to beat it, and `schema.test.ts` asserts the attack item has precisely two properties so there never is.
+
+**The guard reports what it threw away.** Rejected items are dropped and counted on screen with the reason. A guard that silently deletes two of three attacks is indistinguishable from a model that only had one to offer, and the difference is the whole reason to trust the panel. Two rules do the work: a length cap, and a fixed list of phrasings that only appear when the model has started writing the case — second-person instruction, first-person advocacy, and "have you considered that X?", which is the single most common way an argument arrives wearing a question mark. Every pattern ships with an *accepting* test beside its rejecting one, because a guard that eats honest questions is worse than no guard: it makes the panel look broken, and a debater who stops reading the panel has lost the feature.
+
+**Preempts are deliberately outside `buildSections`.** They are therefore outside the analyzer and outside the completeness meter, and both omissions are load-bearing. Counting an unanswered attack against completeness would mean asking for help lowers your score. Firing a rule on an empty `response` would break Layer A's own rule that no heuristic ever fires on an empty field. The coach panel and the substantive's own preempt list count the unanswered ones instead. `setFieldByPath` still routes `substantives.<id>.preempts.<id>.response`, so an answer saves and stamps `updatedAt` exactly like a template row.
+
+**Nothing is written into the case unasked** — the same rule phase 6 settled for improvisations. An attack becomes a `Preempt` and a POI becomes a row when the debater presses the button beside it, and "Added" is derived from the case rather than remembered in the panel, so deleting the row from the prep sheet puts the button back.
+
+**The call is filed under the substantive it was *about*.** `CoachRun.subjectId` is captured when the run starts, not read off the open section when the reply lands. High effort takes long enough to read another substantive while it runs, and filing three attacks under whichever row happened to be open is a silent, plausible-looking corruption of the case. Found by driving the panel, not by reading it.
+
+**Two wire decisions taken from the current API rather than from habit.** `fallbacks: "default"` with the `server-side-fallback-2026-07-01` beta is sent, so a request Opus 5's classifiers decline is re-run on the recommended fallback instead of coming back as a refusal — and a 400 mentioning it is retried once without it, because betas are enabled per organisation and losing Layer B entirely over an optional robustness feature is the worse failure. And the schema carries **no** `maxLength`, `minItems` or `minimum`: Anthropic's structured-output subset drops those silently, so a length constraint written there would look enforced and do nothing. Both caps live in `validate.ts`, and `schema.test.ts` fails if one drifts back.
+
+**Still open: no call has been made.** Everything above is pinned by 46 TypeScript tests and 11 Rust ones, and the panel has been driven through all seven of its states — but PLAN verification step 10 needs an API key, and nothing here has yet been billed a token. What only a live call can settle is whether high effort is tolerable against a 15-minute prep clock, and whether the guard's phrase list rejects anything Opus 5 actually writes.
+
 ---
 
 ## Part 3 — Speech Trainer
@@ -344,6 +364,14 @@ src/
   db/index.ts              SQLite queries, Yjs doc <-> row projection
   sync/supabase.ts         client, auth, join_team, library queries
   sync/provider.ts         Yjs over Realtime; y-webrtc LAN fallback
+  coach/types.ts           CoachResult, DepthAxis, CoachPrompt — Layer B's contract
+  coach/schema.ts          the JSON schemas; the structural half of the Socratic rule
+  coach/prompts.ts         system + user prompts, built through buildSections
+  coach/validate.ts        length cap + coaching-voice guard (pure)
+  coach/parse.ts           reply -> CoachResult, guarded (pure)
+  coach/client.ts          the four Tauri commands; the key never comes back
+  coach/index.ts           runAudit / runAttack / runPois
+  hooks/useCoach.ts        one call at a time, key status, subject capture
   analysis/index.ts        runAnalysis(case, role) -> Finding[]
   analysis/types.ts        Finding, RuleContext, AnalysisRule
   analysis/scope.ts        which rules may fire on which field
@@ -367,7 +395,7 @@ src/
   hooks/useSpeechReview.ts live report, small.en re-pass, session row
   components/              CaseEditor, SectionView, TemplateTable, FieldEditor,
                            SectionNav, SeatPicker, PrepTimer, CompletenessMeter,
-                           Library, DepthPanel, TeamSetup
+                           Library, DepthPanel, CoachPanel, PreemptList, TeamSetup
   components/speech/       SpeechView, Teleprompter, SpeechTimer, LiveTranscript,
                            SpeechReport, SessionHistory, Playback (phase 10)
   export/docx.ts, dbcase.ts, speechSheet.tsx
@@ -383,8 +411,8 @@ src/
 4. ~~Script compiler~~ *(the hinge — landed before any speech UI)* — done
 5. ~~Whisper sidecar + aligner + teleprompter + timer~~ — done
 6. ~~Report + session history~~ — done
-7. Claude Layer B ← **next**
-8. Export + `.docx` / `.dbcase`
+7. ~~Claude Layer B~~ — done
+8. Export + `.docx` / `.dbcase` ← **next**
 9. Supabase: schema, RLS, invite-code join, library sync, recording upload
 10. Coach comments on recordings
 11. Live co-prep over Realtime, then the y-webrtc LAN fallback
@@ -516,6 +544,8 @@ Each of these is downstream of an interface that will already exist when the age
 
 Three of these land in phase 5, so they are worth writing *before* it rather than during.
 
+**Phase 7 shipped without `prompt-guard`, and the reason is the one the table itself gives.** The brief was "red-team the Socratic constraint, verify the schema and the validator both hold" — adversarial against a fixed target, which is exactly where an agent pays. What it turned out to be was 46 assertions in three files, and the ones that mattered were not adversarial at all: the accepting case beside each rejecting pattern, which is what stops the guard eating honest questions. A cold agent trying to break the fence would have written more attacks on it and none of those. The content survived as a convention, the way `analyzer-rule`'s did: **every voice rule ships with an example it must let through.** The agent still has a real job on the next prompt change, when the fence is fixed and only the wording moves.
+
 **Phase 5 shipped without them too, and this time for a mechanical reason rather than a judgement:** `.claude/` is in `.gitignore` as per-machine state, so an agent definition written there is not team state and never reaches the repo. That is fine for `aligner-tester` in hindsight — the adversarial cases it was briefed to generate are the eight `describe` blocks in `align.test.ts`, written alongside the aligner while the contract was still moving, and the one that mattered (a jump between substantives discarding the confirmed prefix) came out of watching the DP misbehave, not out of a cold brief. `whisper-bench` still has a real job and now has a real surface to point at: `TranscriptionOptions` exists precisely so the window, tail and tick can be measured rather than guessed, and none of them has been. `rust-sidecar`'s work is done. If the agents are wanted, un-ignore `.claude/agents/` first.
 
 **`crdt-sync` is split rather than kept.** The Yjs document shape and the doc↔row projection are design work tangled with the data model and the editor — inline. The convergence tests under partition are adversarial against a finished provider, and that half is agent work; fold it into phase 11 as a test brief rather than an agent that owns the feature.
@@ -526,7 +556,7 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
 
 ## Verification
 
-1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 624 tests across 25 files, alongside `cargo test` at 20.
+1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 694 tests across 29 files, alongside `cargo test` at 31.
 2. **Regression fixture from real work.** Seed the fake-news case from my friend's filled example (`reference/template-filled-example.docx`). It has genuine, checkable defects the analyzer must catch:
    - `subOverlap` flags Sub 1 ("fake news causes irreparable damage") against Sub 2 ("allowing the spread is supporting it") — they share most of their content vocabulary.
    - `vagueness` flags "damages lives", "individuals in society", "many damages".
@@ -550,7 +580,7 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
 7. Deliberately skip a sentence mid-speech; confirm it strikes through live and lands in the report linked to its case field. **Done.** A synthetic delivery that drops nine words strikes through exactly those nine and nothing else in the running UI, and a delivery that drops a whole row comes back in the report as one clause naming `substantives.sub-1.whyBad` — rendered as the template's own question, "Why is the problem so bad?". Pinned by `report.test.ts` against the real compiled fixture, not a hand-made script.
 8. **Offline test** — disable networking entirely. Case building, analysis, transcription, alignment, and reporting all still work; edits queue and drain on reconnect. Only the Claude button and library refresh degrade.
 9. `npm run tauri build` → install the `.msi` on a second machine with no dev tools; confirm speech capture works with zero setup.
-10. With an API key saved: run `attack` on a substantive, confirm three opposition responses come back and that no returned field contains a written-out argument for my own motion.
+10. With an API key saved: run `attack` on a substantive, confirm three opposition responses come back and that no returned field contains a written-out argument for my own motion. **Half done — everything except the call itself.** The schema has nowhere to put an argument for my own motion and a test walks it to prove that; the guard rejects the phrasings that would smuggle one past a schema, with an accepting case beside every rejecting one; and the panel was driven through all seven of its states against synthetic replies, which is what caught the run being filed under the wrong substantive. What is untested is the round trip: no request has been sent, so nothing yet says whether `effort: "high"` is tolerable against a prep clock, whether the guard rejects things Opus 5 genuinely writes, or whether this account can use the refusal-fallback beta. That needs an API key, which is the debater's to add.
 11. **RLS test** — join two teams with different codes from two installs and confirm neither can read the other's cases, sessions, or recordings by any query. Mark a case `private` and confirm a teammate cannot see it. Rotate the invite code and confirm the old one stops working.
 12. **Recording round-trip** — record a speech, confirm the Opus upload is roughly a tenth the WAV's size, then play it back on a second machine and leave a comment at a timestamp that appears on the first.
 13. **Co-prep test** — two instances edit different fields of one case simultaneously; confirm convergence with no lost text. Pull one machine off the network mid-edit and confirm it reconciles on rejoin. Then kill internet on both and confirm the LAN fallback still merges.

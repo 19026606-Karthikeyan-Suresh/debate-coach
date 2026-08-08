@@ -26,3 +26,18 @@ tauri-plugin-log = "2"
 # `sqlite` feature only — the postgres and mysql backends pull in a large dependency tree
 # and the local store is always SQLite.
 tauri-plugin-sql = { version = "2.4.0", features = ["sqlite"] }
+# The Anthropic proxy. `native-tls` rather than the default rustls stack on purpose: reqwest's
+# default TLS is rustls over aws-lc-rs, which needs cmake and NASM on Windows and would put a
+# C toolchain between a teammate and a build. `native-tls` is schannel here — the same TLS the
+# rest of the machine already trusts, and no new build tooling.
+reqwest = { version = "0.13.4", default-features = false, features = [
+    "json",
+    "http2",
+    "charset",
+    "native-tls",
+    "system-proxy",
+] }
+# Windows Credential Manager, via `windows-native`. On any other platform this crate falls back
+# to an in-memory store, which would silently forget the key — `coach_status` reports the backend
+# so the UI can say so rather than pretending the key was saved.
+keyring = { version = "3.6.3", features = ["windows-native"] }
