@@ -1,0 +1,10 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "externalBin": ["binaries/whisper-cli"],
+    "resources": {
+      "resources/models/ggml-base.en.bin": "models/ggml-base.en.bin",
+      "resources/models/ggml-small.en.bin": "models/ggml-small.en.bin"
+    }
+  }
+}

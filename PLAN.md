@@ -235,6 +235,18 @@ Three things in the template are followed rather than improved, each recorded at
 - Rust encodes the WAV to Opus for upload; the WAV stays local.
 - `TranscriptionSource` interface with `WhisperLiveSource` primary and `WebSpeechSource` retained as a fallback if a sidecar fails to launch.
 
+#### What the build settled — `src-tauri/src/whisper.rs`
+
+**The live path above cannot be built as written, and the reason is worth keeping.** whisper.cpp's `stream` example opens the microphone itself through SDL2. It has no stdin, so there is nothing to pipe PCM into. Adopting it would mean bundling SDL2, losing device selection and noise suppression the browser already does, and handing capture to a process that cannot also produce the WAV the report path needs.
+
+What is built keeps every property that was actually wanted — browser owns the mic, Rust owns the sidecar and the event channel, the WAV lands on disk — and changes only the middle. A worker thread runs plain `whisper-cli`, the binary every whisper.cpp build produces, over a **rolling window** of the audio so far. whisper-cli timestamps each segment and puts boundaries at pauses, so a segment ending comfortably before the window's edge is finished: its text joins a committed prefix and the window slides past it, while everything after is a live tail re-decoded each tick. The frontend is handed `committed + tail` as one transcript, which is exactly `advanceAlignment`'s contract. Cutting at segment boundaries rather than a fixed offset is what stops a word being sliced across two windows.
+
+The cost is latency against a true streaming decoder. What it buys: window length, tail and tick are `TranscriptionOptions` rather than constants, which is the whole surface `whisper-bench` needs; a failed decode loses one window instead of the speech; and one binary serves both the live pass and the `small.en` re-pass.
+
+**Audio crosses IPC as a raw request body**, not as a command argument — a minute of speech is a million samples and serialising those as a JSON array of numbers costs more than transcribing them. The whole speech is held in memory (13 MB for seven minutes) and written to WAV once at the end, which is also what lets the worker re-read the window at any offset without seeking a file that is still being written.
+
+**`bundle.externalBin` is not in the committed config.** `tauri-build` validates it, so naming a binary that is not on disk fails `cargo build` — and therefore clippy and CI — for anyone who has not first downloaded 640 MB of model weights. Bundling moved to `tauri.bundle-whisper.conf.json`, merged in at release time only. Runtime resolution searches next to the executable first (where a bundled sidecar lands) then app-data (where `scripts/fetch-whisper.ps1` installs it), so the same code serves both without a build flag.
+
 ### Alignment — `src/speech/align.ts`
 
 The core algorithm, and the thing that actually fixes the skipping.
@@ -245,10 +257,26 @@ The core algorithm, and the thing that actually fixes the skipping.
 - **Re-anchoring**: a long unmatched run widens the search window and re-scans — handles jumping sections, restarting a sentence, or answering a POI mid-speech.
 - Pure function, no DOM, no async, heavily unit-tested.
 
+#### What the build settled — `src/speech/`
+
+**There is no substitution, and that is a feature.** A DP over words normally allows a mismatched pair at a penalty. Here it must not: "you said a different word here" is not something the debater can act on, while "you skipped this and added that" is exactly what the report shows. A wrong word therefore comes out as one skip beside one improvisation, which is both true and useful.
+
+**Re-anchoring freezes the confirmed prefix first.** Re-running the whole window with free leading gaps is the obvious implementation and it is wrong: a free leading gap is cheaper than keeping matches already found, so the DP discards twenty correctly-spoken words and calls them improvised. Only the unexplained tail is re-aligned, against a much wider slice — which is also what re-anchoring *means*: "these last words are not here, where are they?" Only forward jumps are searched, because searching backwards would let the aligner re-match material already marked spoken and quietly erase a real skip.
+
+**A commit is only taken behind an `exact` match.** `near` is the tier that absorbs transcription error, and transcription error is precisely what a later revision comes back to fix, so freezing on one would make a wrong strike-through permanent. There is a separate backstop for the speaker who abandons the script entirely — nothing matches, so nothing would ever commit and the DP would widen for the rest of the speech.
+
+**Classic Metaphone, not Double Metaphone.** The second key of the double variant exists for names of non-English origin; this compares ordinary English prose, and 500 lines of transliterated rules is 500 lines nobody can review against the transcript that broke. Most homophones fall out for free — their/there/they're, no/know, right/write — and the handful that do not are pairs where one member opens with a sounded consonant the other lacks, which is a short list of number words that is simply named.
+
+**The resampler keeps a fractional read position across chunks.** Resampling each chunk independently and rounding its length is the natural thing to write, and it loses a fraction of a sample per call — seconds of drift over a seven-minute speech, which lands as timestamps that no longer point at the audio they came from. A test feeds seven minutes of 48 kHz through in worklet-sized frames and asserts the output is within one sample of exact; the first version of the code failed it by 3281.
+
 ### Teleprompter, timer, report — `src/components/speech/`
 
 - **Teleprompter** auto-scrolls to the *aligned* position, not at a fixed rate. Spoken text dims, skipped words strike through red, improvisations highlight, upcoming text stays full contrast.
 - **Timer** is format-aware: protected-time bar with the POI window shaded, knocks at 1:00 and 6:00, 30-second warning, hard stop, grace period.
+
+**Built, with two things worth recording.** The teleprompter renders each segment by slicing `segment.text` at every token's `start`/`end` rather than joining tokens with spaces, so the compiler's punctuation and spacing survive exactly; a verification pass asserts the rendered text is character-identical to the compiled text for every segment, which is what actually proves the offsets. Improvisations cannot be shown inline as words — they are not in the script — so a run of them collapses to a `+n` marker at the position it was heard, and the transcript panel carries the rest.
+
+Scrolling and the active-segment highlight both had to be made instant: see the note in CLAUDE.md on anything that needs a painted frame. The transition version left the highlight on the wrong segment indefinitely.
 - **Report** — skipped words grouped by section and linked back to their case field; pace over time; fillers and pauses >2 s with timestamps; time per section vs plan; improvised additions offered for saving back into the case.
 - **Playback with comments** — scrub the recording, and a coach's timestamped notes appear inline.
 - **Session history** charts skip rate, filler rate, and pace across sessions, mine and the team's.
@@ -286,6 +314,8 @@ src/
   hooks/useCaseStore.ts    load + debounced SQLite autosave
   hooks/usePrepTimer.ts    deadline-based prep countdown
   hooks/useAnalysis.ts     debounced runAnalysis
+  hooks/useSpeechTimer.ts  deadline-based speech clock, fires each knock once
+  hooks/useSpeechSession.ts  source lifecycle + incremental alignment
   db/index.ts              SQLite queries, Yjs doc <-> row projection
   sync/supabase.ts         client, auth, join_team, library queries
   sync/provider.ts         Yjs over Realtime; y-webrtc LAN fallback
@@ -302,8 +332,11 @@ src/
   script/edits.ts          per-segment delivery edits, stored apart from the case
   speech/recognition.ts    TranscriptionSource, WhisperLiveSource, WebSpeechSource
   speech/align.ts          streaming DP aligner (pure)
-  speech/normalize.ts      lowercase / punct / numerals / phonetic key
-  speech/fillers.ts, metrics.ts
+  speech/normalize.ts      variants, Metaphone, run-to-run matching (pure)
+  speech/capture.ts        mic -> 16 kHz mono PCM16, drift-free resampler
+  speech/transcript.ts     word splitting, interim merge, pace (pure)
+  speech/timer.ts          speech clock + edge-triggered knocks (pure)
+  speech/fillers.ts, metrics.ts        deferred to phase 6 with the report
   components/              CaseEditor, SectionView, TemplateTable, FieldEditor,
                            SectionNav, SeatPicker, PrepTimer, CompletenessMeter,
                            Library, DepthPanel, TeamSetup
@@ -320,8 +353,8 @@ src/
 2. ~~Case Builder UI~~ — done
 3. ~~Analyzer Layer A~~ — done
 4. ~~Script compiler~~ *(the hinge — landed before any speech UI)* — done
-5. Whisper sidecar + aligner + teleprompter + timer ← **next**
-6. Report + session history
+5. ~~Whisper sidecar + aligner + teleprompter + timer~~ — done
+6. Report + session history ← **next**
 7. Claude Layer B
 8. Export + `.docx` / `.dbcase`
 9. Supabase: schema, RLS, invite-code join, library sync, recording upload
@@ -450,6 +483,8 @@ Each of these is downstream of an interface that will already exist when the age
 
 Three of these land in phase 5, so they are worth writing *before* it rather than during.
 
+**Phase 5 shipped without them too, and this time for a mechanical reason rather than a judgement:** `.claude/` is in `.gitignore` as per-machine state, so an agent definition written there is not team state and never reaches the repo. That is fine for `aligner-tester` in hindsight — the adversarial cases it was briefed to generate are the eight `describe` blocks in `align.test.ts`, written alongside the aligner while the contract was still moving, and the one that mattered (a jump between substantives discarding the confirmed prefix) came out of watching the DP misbehave, not out of a cold brief. `whisper-bench` still has a real job and now has a real surface to point at: `TranscriptionOptions` exists precisely so the window, tail and tick can be measured rather than guessed, and none of them has been. `rust-sidecar`'s work is done. If the agents are wanted, un-ignore `.claude/agents/` first.
+
 **`crdt-sync` is split rather than kept.** The Yjs document shape and the doc↔row projection are design work tangled with the data model and the editor — inline. The convergence tests under partition are adversarial against a finished provider, and that half is agent work; fold it into phase 11 as a test brief rather than an agent that owns the feature.
 
 **Still not agents.** The Case Builder UI, the script compiler, and the export path are one-off, highly interdependent, and easier to hold in one head than to brief — build those inline. Phases 1–3 confirmed it.
@@ -467,7 +502,7 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
 3. **Script compiler against the template.** Every phrase the compiler claims is the template's is looked back up in `reference/template-blank.docx`, and every slot resolves to a row the editor actually renders — both directions, so a template row that is never spoken has to be listed as deliberate. A completely filled case, for all fourteen seats across both formats, compiles with an empty `gaps`.
 4. **Aligner tests without a microphone** — synthetic transcripts against a known script: verbatim, dropped clause, improvised insertion, homophone (`their`/`there`), restarted sentence, jump from Sub 1 to Sub 3. Assert exact skipped/added token sets.
 5. `npm run tauri dev` → build a case end-to-end: BP + CG, fill Sub 1, confirm inline underlines and depth-panel findings appear.
-6. **Whisper sidecar check** — `base.en` transcribes live with the teleprompter keeping pace during fast delivery; the `small.en` post-pass produces a different and better transcript that the report is built from.
+6. **Whisper sidecar check** — `base.en` transcribes live with the teleprompter keeping pace during fast delivery; the `small.en` post-pass produces a different and better transcript that the report is built from. **Not yet run**: needs `scripts/fetch-whisper.ps1` and a microphone. Phase 5 covered the parts that can be checked without either — the stdout parser and the window-commit logic by unit test, the teleprompter and timer by driving them against a synthetic delivery.
 7. Deliberately skip a sentence mid-speech; confirm it strikes through live and lands in the report linked to its case field.
 8. **Offline test** — disable networking entirely. Case building, analysis, transcription, alignment, and reporting all still work; edits queue and drain on reconnect. Only the Claude button and library refresh degrade.
 9. `npm run tauri build` → install the `.msi` on a second machine with no dev tools; confirm speech capture works with zero setup.
