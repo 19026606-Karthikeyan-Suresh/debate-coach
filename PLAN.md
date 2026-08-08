@@ -229,15 +229,15 @@ Three things in the template are followed rather than improved, each recorded at
 
 ### Whisper sidecar — `src-tauri/`
 
-- `whisper.cpp` compiled for Windows, declared under `bundle.externalBin`; `ggml-base.en.bin` and `ggml-small.en.bin` in `bundle.resources`. One installer, nothing for a teammate to download or compile.
-- **Live path**: Web Audio API captures mic → 16 kHz mono PCM → Tauri command streams to the `whisper-stream` sidecar's stdin → partial transcripts return over a Tauri event channel. `base.en` stays comfortably real-time on CPU.
-- **Report path**: the speech is saved as WAV; afterwards `whisper-cli` re-transcribes with `small.en`, alignment is recomputed, and the report is built from the better transcript. The numbers I keep are the trustworthy ones.
-- Rust encodes the WAV to Opus for upload; the WAV stays local.
-- `TranscriptionSource` interface with `WhisperLiveSource` primary and `WebSpeechSource` retained as a fallback if a sidecar fails to launch.
+- `whisper-cli` compiled for Windows plus `ggml-base.en.bin` and `ggml-small.en.bin`, bundled by `tauri.bundle-whisper.conf.json` at release time. One installer, nothing for a teammate to download or compile — but see the note on `externalBin` below for why that config is separate from `tauri.conf.json`.
+- **Live path**: Web Audio API captures mic → 16 kHz mono PCM → one Tauri command with a raw body → a Rust worker thread runs `base.en` over a rolling window → transcripts return on the `speech://transcript` event channel.
+- **Report path**: the speech is saved as WAV; afterwards `retranscribe_speech` re-runs `whisper-cli` with `small.en`, alignment is recomputed, and the report is built from the better transcript. The numbers I keep are the trustworthy ones.
+- Rust encodes the WAV to Opus for upload; the WAV stays local. *(Phase 9, with the upload it exists for.)*
+- `TranscriptionSource` interface with `WhisperLiveSource` primary and `WebSpeechSource` retained as a fallback if the sidecar is missing or fails to launch.
 
 #### What the build settled — `src-tauri/src/whisper.rs`
 
-**The live path above cannot be built as written, and the reason is worth keeping.** whisper.cpp's `stream` example opens the microphone itself through SDL2. It has no stdin, so there is nothing to pipe PCM into. Adopting it would mean bundling SDL2, losing device selection and noise suppression the browser already does, and handing capture to a process that cannot also produce the WAV the report path needs.
+**The live path originally specified here could not be built, and the reason is worth keeping.** It read: "Tauri command streams to the `whisper-stream` sidecar's stdin". whisper.cpp's `stream` example opens the microphone itself through SDL2. It has no stdin, so there is nothing to pipe PCM into. Adopting it would mean bundling SDL2, losing device selection and noise suppression the browser already does, and handing capture to a process that cannot also produce the WAV the report path needs.
 
 What is built keeps every property that was actually wanted — browser owns the mic, Rust owns the sidecar and the event channel, the WAV lands on disk — and changes only the middle. A worker thread runs plain `whisper-cli`, the binary every whisper.cpp build produces, over a **rolling window** of the audio so far. whisper-cli timestamps each segment and puts boundaries at pauses, so a segment ending comfortably before the window's edge is finished: its text joins a committed prefix and the window slides past it, while everything after is a live tail re-decoded each tick. The frontend is handed `committed + tail` as one transcript, which is exactly `advanceAlignment`'s contract. Cutting at segment boundaries rather than a fixed offset is what stops a word being sliced across two windows.
 
@@ -252,8 +252,8 @@ The cost is latency against a true streaming decoder. What it buys: window lengt
 The core algorithm, and the thing that actually fixes the skipping.
 
 - Streaming **Needleman–Wunsch DP** over a sliding window anchored at a moving cursor.
-- Classifies every script token as `spoken`, `skipped`, or `pending`, and every unmatched transcript token as `added` (improvised).
-- **Normalization before matching** (`normalize.ts`): lowercase, strip punctuation, expand numerals, plus a phonetic key (Double Metaphone) so transcription errors don't register as skips. Without this the feature cries wolf and I stop trusting it.
+- Classifies every script token as `spoken`, `skipped`, or `pending`, and collects every unmatched transcript token as an `Improvisation`.
+- **Normalization before matching** (`normalize.ts`): lowercase, strip punctuation, expand numerals, plus a phonetic key (classic Metaphone — see below for why not Double) so transcription errors don't register as skips. Without this the feature cries wolf and I stop trusting it.
 - **Re-anchoring**: a long unmatched run widens the search window and re-scans — handles jumping sections, restarting a sentence, or answering a POI mid-speech.
 - Pure function, no DOM, no async, heavily unit-tested.
 
@@ -293,11 +293,12 @@ No script loaded: transcribe an opponent's speech, then optionally have Claude f
 supabase/
   migrations/*.sql         schema, RLS policies, join_team(), rotate_invite_code()
 src-tauri/
-  tauri.conf.json          externalBin: whisper sidecars; resources: ggml models
+  tauri.conf.json          window, SQLite plugin. No externalBin — see the whisper note
+  tauri.bundle-whisper.conf.json   merged in at release time to bundle cli + models
   Cargo.toml
   src/main.rs, lib.rs
-  src/whisper.rs           sidecar lifecycle, PCM stdin, event emit
-  src/audio.rs             WAV capture, Opus encode
+  src/whisper.rs           sidecar lifecycle, rolling-window worker, event emit
+  src/audio.rs             PCM buffer, WAV writer (Opus encode lands in phase 9)
   src/coach.rs             Anthropic calls, keychain-backed key
   src/sync.rs              offline queue, upload/download, conflict handling
   src/db.rs                SQLite migrations
@@ -340,7 +341,7 @@ src/
   components/              CaseEditor, SectionView, TemplateTable, FieldEditor,
                            SectionNav, SeatPicker, PrepTimer, CompletenessMeter,
                            Library, DepthPanel, TeamSetup
-  components/speech/       Teleprompter, SpeechTimer, LiveTranscript,
+  components/speech/       SpeechView, Teleprompter, SpeechTimer, LiveTranscript,
                            SpeechReport, Playback, SessionHistory
   export/docx.ts, dbcase.ts, speechSheet.tsx
   **/__tests__/*.test.ts
@@ -408,16 +409,21 @@ Not: *"This function is responsible for taking in a piece of text and carefully 
 
 Rust uses `///` with the same rule, and `# Errors` / `# Panics` sections where either is possible.
 
+Taken from the shipped `whisper.rs`, so the example stays honest:
+
 ```rust
-/// Streams 16 kHz mono PCM to the whisper-stream sidecar and emits partial transcripts.
+/// Finds whisper and its models.
 ///
-/// * `sample_rate` — must be 16000; whisper.cpp resamples nothing and silently produces garbage otherwise.
-/// * `model_path` — resolved from bundle resources, not user input. Callers never build this by hand.
+/// * `app` — supplies the resource and app-data directories, which differ between a dev run and
+///   an installed build. Never build these paths by hand.
 ///
 /// # Errors
-/// Returns `WhisperError::SidecarUnavailable` if the binary is missing from the bundle,
-/// which is the signal to fall back to `WebSpeechSource`.
-pub fn stream_transcription(sample_rate: u32, model_path: &Path) -> Result<Receiver<Partial>, WhisperError>
+/// [`WhisperError::SidecarUnavailable`] when no binary is found — the signal to fall back to the
+/// browser recogniser — or [`WhisperError::ModelMissing`] when the binary is there but
+/// `base.en` is not, which means a half-finished install rather than no install.
+pub fn resolve_assets<TRuntime: Runtime>(
+    app: &AppHandle<TRuntime>,
+) -> Result<WhisperAssets, WhisperError>
 ```
 
 ### Comments
@@ -477,7 +483,7 @@ Each of these is downstream of an interface that will already exist when the age
 |---|---|---|---|
 | **aligner-tester** | 5 | Adversarial. Its job is to *break* `align.ts`: homophones, restarted sentences, section jumps, POI interruptions, ASR dropout, filler storms. Generates synthetic transcripts and asserts exact token classifications. The strongest case of the nine — `align.ts` is a pure function with a fixed signature, so the whole brief is "here is the contract, break it". | opus |
 | **whisper-bench** | 5 | Empirical. Measures live latency and word error rate for `base.en` vs `small.en` on real recordings; tunes chunk size and window overlap. Reports numbers, doesn't guess. Long-running and decides nothing. | sonnet |
-| **rust-sidecar** | 5 | Tauri v2 specifics — `externalBin`, `bundle.resources`, capability and permission JSON, sidecar spawn, stdin piping, event channels. Version-specific, fiddly, and genuinely isolated from app logic. | opus |
+| **rust-sidecar** | 5 | Tauri v2 specifics — `externalBin`, `bundle.resources`, capability and permission JSON, sidecar spawn, raw-body IPC, event channels. Version-specific, fiddly, and genuinely isolated from app logic. | opus |
 | **prompt-guard** | 7 | Red-teams the Socratic constraint. Actively tries to make Layer B write my argument, and verifies the JSON schema plus the validator both hold. Runs on every prompt change. Adversarial against a fixed schema. | opus |
 | **supabase-rls** | 9 | Writes migrations and *proves* the policies by attempting cross-team reads from a second identity. Security-critical and quietly easy to get wrong. Never marks a policy done without a failing-read test. | opus |
 
@@ -493,17 +499,17 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
 
 ## Verification
 
-1. `npx vitest run` — every analyzer rule and every aligner case has unit tests.
+1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 563 tests across 22 files, alongside `cargo test` at 12.
 2. **Regression fixture from real work.** Seed the fake-news case from my friend's filled example (`reference/template-filled-example.docx`). It has genuine, checkable defects the analyzer must catch:
    - `subOverlap` flags Sub 1 ("fake news causes irreparable damage") against Sub 2 ("allowing the spread is supporting it") — they share most of their content vocabulary.
    - `vagueness` flags "damages lives", "individuals in society", "many damages".
    - `impactAxes` flags Sub 1 as missing probability and timeframe.
    - Sub 2's `howThisSolves` and both subs' `example`/`link` are empty → completeness meter shows the gap.
 3. **Script compiler against the template.** Every phrase the compiler claims is the template's is looked back up in `reference/template-blank.docx`, and every slot resolves to a row the editor actually renders — both directions, so a template row that is never spoken has to be listed as deliberate. A completely filled case, for all fourteen seats across both formats, compiles with an empty `gaps`.
-4. **Aligner tests without a microphone** — synthetic transcripts against a known script: verbatim, dropped clause, improvised insertion, homophone (`their`/`there`), restarted sentence, jump from Sub 1 to Sub 3. Assert exact skipped/added token sets.
+4. **Aligner tests without a microphone** — synthetic transcripts against a known script: verbatim, dropped clause, improvised insertion, homophone (`their`/`there`), restarted sentence, jump from Sub 1 to Sub 3. Assert exact skipped/added token sets. **Done** — all six are in `align.test.ts`, plus a dropped run of transcript, a filler storm, a speaker who abandons the script, and a check that streaming in chunks of 1, 2, 5 and 13 words reaches the same answer as one call.
 5. `npm run tauri dev` → build a case end-to-end: BP + CG, fill Sub 1, confirm inline underlines and depth-panel findings appear.
 6. **Whisper sidecar check** — `base.en` transcribes live with the teleprompter keeping pace during fast delivery; the `small.en` post-pass produces a different and better transcript that the report is built from. **Not yet run**: needs `scripts/fetch-whisper.ps1` and a microphone. Phase 5 covered the parts that can be checked without either — the stdout parser and the window-commit logic by unit test, the teleprompter and timer by driving them against a synthetic delivery.
-7. Deliberately skip a sentence mid-speech; confirm it strikes through live and lands in the report linked to its case field.
+7. Deliberately skip a sentence mid-speech; confirm it strikes through live and lands in the report linked to its case field. **Half done**: a synthetic delivery that drops nine words strikes through exactly those nine and nothing else, verified in the running UI. The report half is phase 6.
 8. **Offline test** — disable networking entirely. Case building, analysis, transcription, alignment, and reporting all still work; edits queue and drain on reconnect. Only the Claude button and library refresh degrade.
 9. `npm run tauri build` → install the `.msi` on a second machine with no dev tools; confirm speech capture works with zero setup.
 10. With an API key saved: run `attack` on a substantive, confirm three opposition responses come back and that no returned field contains a written-out argument for my own motion.
