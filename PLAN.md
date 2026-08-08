@@ -201,7 +201,7 @@ Activates when an Anthropic API key has been saved to the OS keychain. Uses **`c
 
 ## Part 3 — Speech Trainer
 
-### Script compiler — `src/script/compile.ts`
+### Script compiler — `src/script/`
 
 The bridge between the two halves.
 
@@ -210,6 +210,22 @@ The bridge between the two halves.
 - Output is `ScriptSegment[]` — `{ id, sectionId, text, tokens }` — so teleprompter, timer, and report reference the same positions, and a skipped word traces back to the case field it came from.
 
 Compiled scripts stay editable; edits are stored separately so re-editing the case doesn't clobber delivery tweaks.
+
+#### What the build settled — `src/script/`
+
+**The compiler reads values through `buildSections`, not off the `Case`.** Same decision the analyzer made, and it buys the same four things: the field list is already scoped to one seat, it already resolves only the chosen side of each "(OR)" fork, its `path` is the string `setFieldByPath` accepts, and its `label` is already pointed at the right bench by `withOpponentName`. Structure — which clashes exist, which engagement kind, which branch, whether the branch carries the extension — still comes off the `Case`, because that is exactly what the projection flattens away. The block walk in `compile.ts` deliberately mirrors `buildSections`: the script comes out in the editor's order, which is the template's order, which is the order the speech is given in.
+
+**The unit that stands or falls is a line, and a line with a blank slot is not emitted at all.** Reading "In response they told us. This argument is wrong because." out loud is worse than saying nothing, so the sentence is dropped and the field comes back in `CompiledScript.gaps` with the label the editor shows. This is a different statement from the completeness meter's: not "twelve rows left" but "these are the sentences you cannot say yet", and it is what makes the length estimate honest. On the reference case it is also the phase's clearest result — the filled example compiles to 1060 words, 6:38 of a 7:00 speech, with CASE SET-UP still entirely unwritten.
+
+**Punctuation at the seam is where the real bugs were.** The template punctuates its prose and the debater punctuates their answers, and naive concatenation produces "…irrecoverable. , their argument fails." on ordinary input. `assembleText` resolves four boundary cases, one of which needs to know whether the incoming run is the template's prose or a field: the template splices mid-sentence ("This is bad because ___ is something that happens all the time"), so a lowercase continuation means the debater's full stop lands in the middle of the template's sentence and has to go — but only when the lowercase words are the template's, because plenty of answers start lowercase and are whole sentences.
+
+**Nothing corrects the debater's text.** A field starting lowercase after a lead-in's question mark stays lowercase. Beyond keeping the compiler out of the business of rewriting, it means a script token is byte-identical to the field text it came from, which is what lets phase 6 map a skipped word back to a character span in the row.
+
+**Three modules, not one.** `skeleton.ts` is the template's Speaker 3 prose quoted verbatim as data, and `skeleton.test.ts` looks every phrase of three words or more back up in the real `.docx` — the same guarantee `fields.ts` has, for the same reason. `signposts.ts` is the authored Speaker 1/2 glue, kept separate precisely because no fidelity test pins it. `lines.ts` holds the join rules and the tokenizer, which is the analyzer's own `tokenize` rather than a second one, so the word a finding underlines and the word the aligner marks as skipped are the same word. A slot naming a field the registry lacks drops its line silently rather than throwing mid-round; `skeleton.test.ts` checks both directions of that mapping, including which registry rows are deliberately never spoken.
+
+**Segment ids are derived from case ids** (`substantives.<uuid>#body`, `clashes.<uuid>#engagement.<uuid>`), never counted, so a delivery edit stored in `edits.ts` lands back on the same segment after the next keystroke recompiles everything. An edited segment's tokens carry `fieldPath: null` — matching a rewrite back against the values it was built from is a guess dressed up as a fact, and the whole point of `fieldPath` is that it is not one.
+
+Three things in the template are followed rather than improved, each recorded at its site: "Prop's 2nd/ 3rd speaker" keeps its slash, "Even if we accept their characterisation of ___." keeps its sentence fragment, and every clash compiles with the first clash's wording because the data model has one engagement shape. The edit layer is the escape hatch for all three.
 
 ### Whisper sidecar — `src-tauri/`
 
@@ -278,7 +294,12 @@ src/
   analysis/scope.ts        which rules may fire on which field
   analysis/highlight.ts    findings -> underline segments
   analysis/text.ts, lexicons.ts, rules/*.ts
-  script/compile.ts        Case -> ScriptSegment[]
+  script/types.ts          ScriptSegment, ScriptToken, CompiledScript, ScriptGap
+  script/lines.ts          LineTemplate, join rules, provenance-keeping tokenizer
+  script/skeleton.ts       the template's Speaker 3 prose, quoted as data
+  script/signposts.ts      authored Speaker 1/2 signposts
+  script/compile.ts        compileScript(case, role) -> CompiledScript
+  script/edits.ts          per-segment delivery edits, stored apart from the case
   speech/recognition.ts    TranscriptionSource, WhisperLiveSource, WebSpeechSource
   speech/align.ts          streaming DP aligner (pure)
   speech/normalize.ts      lowercase / punct / numerals / phonetic key
@@ -298,8 +319,8 @@ src/
 1. ~~Tauri scaffold + SQLite + formats + data model~~ — done
 2. ~~Case Builder UI~~ — done
 3. ~~Analyzer Layer A~~ — done
-4. Script compiler *(the hinge — lands before any speech UI)* ← **next**
-5. Whisper sidecar + aligner + teleprompter + timer
+4. ~~Script compiler~~ *(the hinge — landed before any speech UI)* — done
+5. Whisper sidecar + aligner + teleprompter + timer ← **next**
 6. Report + session history
 7. Claude Layer B
 8. Export + `.docx` / `.dbcase`
@@ -443,14 +464,15 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
    - `vagueness` flags "damages lives", "individuals in society", "many damages".
    - `impactAxes` flags Sub 1 as missing probability and timeframe.
    - Sub 2's `howThisSolves` and both subs' `example`/`link` are empty → completeness meter shows the gap.
-3. **Aligner tests without a microphone** — synthetic transcripts against a known script: verbatim, dropped clause, improvised insertion, homophone (`their`/`there`), restarted sentence, jump from Sub 1 to Sub 3. Assert exact skipped/added token sets.
-4. `npm run tauri dev` → build a case end-to-end: BP + CG, fill Sub 1, confirm inline underlines and depth-panel findings appear.
-5. **Whisper sidecar check** — `base.en` transcribes live with the teleprompter keeping pace during fast delivery; the `small.en` post-pass produces a different and better transcript that the report is built from.
-6. Deliberately skip a sentence mid-speech; confirm it strikes through live and lands in the report linked to its case field.
-7. **Offline test** — disable networking entirely. Case building, analysis, transcription, alignment, and reporting all still work; edits queue and drain on reconnect. Only the Claude button and library refresh degrade.
-8. `npm run tauri build` → install the `.msi` on a second machine with no dev tools; confirm speech capture works with zero setup.
-9. With an API key saved: run `attack` on a substantive, confirm three opposition responses come back and that no returned field contains a written-out argument for my own motion.
-10. **RLS test** — join two teams with different codes from two installs and confirm neither can read the other's cases, sessions, or recordings by any query. Mark a case `private` and confirm a teammate cannot see it. Rotate the invite code and confirm the old one stops working.
-11. **Recording round-trip** — record a speech, confirm the Opus upload is roughly a tenth the WAV's size, then play it back on a second machine and leave a comment at a timestamp that appears on the first.
-12. **Co-prep test** — two instances edit different fields of one case simultaneously; confirm convergence with no lost text. Pull one machine off the network mid-edit and confirm it reconciles on rejoin. Then kill internet on both and confirm the LAN fallback still merges.
-13. **Conventions hold** — `npm run lint` and `cargo clippy -- -D warnings` both pass with the docstring rules on. Then delete a docstring and a param description and confirm CI actually fails, so the rule isn't quietly disabled.
+3. **Script compiler against the template.** Every phrase the compiler claims is the template's is looked back up in `reference/template-blank.docx`, and every slot resolves to a row the editor actually renders — both directions, so a template row that is never spoken has to be listed as deliberate. A completely filled case, for all fourteen seats across both formats, compiles with an empty `gaps`.
+4. **Aligner tests without a microphone** — synthetic transcripts against a known script: verbatim, dropped clause, improvised insertion, homophone (`their`/`there`), restarted sentence, jump from Sub 1 to Sub 3. Assert exact skipped/added token sets.
+5. `npm run tauri dev` → build a case end-to-end: BP + CG, fill Sub 1, confirm inline underlines and depth-panel findings appear.
+6. **Whisper sidecar check** — `base.en` transcribes live with the teleprompter keeping pace during fast delivery; the `small.en` post-pass produces a different and better transcript that the report is built from.
+7. Deliberately skip a sentence mid-speech; confirm it strikes through live and lands in the report linked to its case field.
+8. **Offline test** — disable networking entirely. Case building, analysis, transcription, alignment, and reporting all still work; edits queue and drain on reconnect. Only the Claude button and library refresh degrade.
+9. `npm run tauri build` → install the `.msi` on a second machine with no dev tools; confirm speech capture works with zero setup.
+10. With an API key saved: run `attack` on a substantive, confirm three opposition responses come back and that no returned field contains a written-out argument for my own motion.
+11. **RLS test** — join two teams with different codes from two installs and confirm neither can read the other's cases, sessions, or recordings by any query. Mark a case `private` and confirm a teammate cannot see it. Rotate the invite code and confirm the old one stops working.
+12. **Recording round-trip** — record a speech, confirm the Opus upload is roughly a tenth the WAV's size, then play it back on a second machine and leave a comment at a timestamp that appears on the first.
+13. **Co-prep test** — two instances edit different fields of one case simultaneously; confirm convergence with no lost text. Pull one machine off the network mid-edit and confirm it reconciles on rejoin. Then kill internet on both and confirm the LAN fallback still merges.
+14. **Conventions hold** — `npm run lint` and `cargo clippy -- -D warnings` both pass with the docstring rules on. Then delete a docstring and a param description and confirm CI actually fails, so the rule isn't quietly disabled.
