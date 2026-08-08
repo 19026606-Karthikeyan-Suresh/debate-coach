@@ -36,8 +36,18 @@ $ErrorActionPreference = 'Stop'
 
 # Pinned rather than "latest" for the same reason rust-toolchain.toml is: whisper.cpp changes
 # its CLI flags and its stdout format between releases, and src/whisper.rs parses both.
-$WhisperRelease = 'v1.7.4'
-$BinaryUrl = "https://github.com/ggerganov/whisper.cpp/releases/download/$WhisperRelease/whisper-bin-x64.zip"
+#
+# v1.7.6 rather than the v1.7.4 written here in phase 5, and not by choice: **v1.7.0 through
+# v1.7.5 shipped no release assets at all.** Prebuilt Windows binaries stop after v1.6.0 and do
+# not resume until v1.7.6, so the original pin could never have worked — it was written without
+# the script ever being run. v1.7.6 is the nearest release to it that exists as a download.
+#
+# The repository also moved from `ggerganov/whisper.cpp` to `ggml-org/whisper.cpp`. The GitHub
+# API follows that rename but release asset URLs do not, so the old path 404s.
+$WhisperRelease = 'v1.7.6'
+$BinaryUrl = "https://github.com/ggml-org/whisper.cpp/releases/download/$WhisperRelease/whisper-bin-x64.zip"
+
+# The models are still published under the personal account; only the code repo was renamed.
 $ModelBaseUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main'
 
 # Must match TAURI_ENV_TARGET_TRIPLE; Tauri looks up externalBin by this exact suffix.
@@ -86,9 +96,18 @@ if ((Test-Path $targetBinary) -and -not $Force) {
   Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
 
   # Releases have moved the executable between the archive root and Release/, and renamed it
-  # from main.exe to whisper-cli.exe. Search rather than assume.
-  $found = Get-ChildItem -Path $extractPath -Recurse -Include 'whisper-cli.exe', 'main.exe' |
-    Select-Object -First 1
+  # from main.exe to whisper-cli.exe. Search rather than assume — but search in **name order,
+  # not directory order**, which is what the first version of this got wrong.
+  #
+  # v1.7.6 ships both names: the real 469 KB decoder as whisper-cli.exe, and a 27 KB deprecation
+  # shim as main.exe that prints a notice and exits 1. `-Include` with both names returns them
+  # alphabetically, so `main.exe` won and the installed "whisper-cli.exe" was a stub that could
+  # never transcribe anything. Ask for the modern name first and only fall back.
+  $found = $null
+  foreach ($candidate in @('whisper-cli.exe', 'main.exe')) {
+    $found = Get-ChildItem -Path $extractPath -Recurse -Filter $candidate | Select-Object -First 1
+    if ($found) { break }
+  }
   if (-not $found) {
     throw "No whisper-cli.exe or main.exe inside $BinaryUrl. The release layout changed."
   }
@@ -110,6 +129,21 @@ if ((Test-Path $targetBinary) -and -not $Force) {
     Copy-Item $_.FullName (Join-Path $BinDir "$stem-$TargetTriple.dll") -Force
     $script:BundledDlls += "binaries/$stem"
   }
+
+  # Prove the thing that was installed actually runs, rather than finding out mid-round.
+  #
+  # Worth the two seconds because both failure modes here are silent: this release ships a
+  # deprecation shim that exits 1 under a name we search for, and whisper-cli dies before
+  # printing anything if the ggml DLLs are not beside it — which `src/whisper.rs` can only ever
+  # report as "whisper-cli failed". Run after the DLL copy above for exactly that reason.
+  # `2>$null` rather than `2>&1`: whisper-cli prints its usage to stderr, and merging a native
+  # command's stderr in PowerShell 5.1 wraps every line in an ErrorRecord.
+  & (Join-Path $AppData 'whisper-cli.exe') '--help' 2>$null | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw ("Installed $($found.FullName) but it exits $LASTEXITCODE on --help, so it is a " +
+      'deprecation stub or is missing its DLLs. The release layout changed again.')
+  }
+
   Write-Host "  whisper-cli -> $targetBinary" -ForegroundColor Green
 }
 

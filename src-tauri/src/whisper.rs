@@ -833,6 +833,28 @@ system_info: n_threads = 4
         assert!(parse_segments("no brackets here at all").is_empty());
     }
 
+    /// Captured verbatim from `whisper-cli.exe v1.7.6` on `samples/jfk.wav`, with the exact flags
+    /// [`transcribe_wav`] passes: `-m … -f … -t 4 --no-prints -l en`. Blank leading line and all.
+    ///
+    /// Everything else in this module is a fixture somebody typed. This one is the real thing,
+    /// and it is what says the pinned release still prints what the parser reads — the fetch
+    /// script pins a version precisely so this cannot drift without somebody choosing to.
+    const REAL_V1_7_6_OUTPUT: &str = "
+[00:00:00.000 --> 00:00:11.000]   And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.
+";
+
+    #[test]
+    fn reads_what_the_pinned_release_actually_prints() {
+        let segments = parse_segments(REAL_V1_7_6_OUTPUT);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].start, 0.0);
+        assert_eq!(segments[0].end, 11.0);
+        assert!(segments[0].text.starts_with("And so my fellow Americans"));
+        // The three spaces whisper pads with must not survive into the transcript: they would
+        // become an empty word the aligner counts as an improvisation.
+        assert!(!segments[0].text.starts_with(' '));
+    }
+
     /// Two segments, the second of which ends inside the tail and must stay revisable.
     fn two_segments() -> Vec<TranscriptSegment> {
         vec![
