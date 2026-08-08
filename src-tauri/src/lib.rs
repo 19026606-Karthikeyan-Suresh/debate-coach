@@ -1,12 +1,14 @@
 //! Debate Coach desktop shell.
 //!
-//! Phase 1 wires the window and the local database only. The whisper sidecar, audio capture,
-//! the Anthropic proxy, and the sync queue land in later phases as sibling modules.
+//! Phase 1 wired the window and the local database; phase 5 adds audio capture and the whisper
+//! sidecar. The Anthropic proxy and the sync queue land in later phases as sibling modules.
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
+pub mod audio;
 pub mod db;
+pub mod whisper;
 
 /// Boots the Tauri application and blocks until the window closes.
 ///
@@ -21,6 +23,17 @@ pub fn run() {
                 .add_migrations(db::DB_URL, db::migrations())
                 .build(),
         )
+        // One recording slot for the whole app. A second speech cannot start while one is open,
+        // which is enforced here by there being nowhere to put it.
+        .manage(whisper::SpeechState::default())
+        .invoke_handler(tauri::generate_handler![
+            whisper::whisper_status,
+            whisper::start_speech_session,
+            whisper::push_speech_audio,
+            whisper::stop_speech_session,
+            whisper::retranscribe_speech,
+            whisper::speech_sample_rate,
+        ])
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(

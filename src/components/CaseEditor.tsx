@@ -29,6 +29,8 @@ export interface CaseEditorProps {
   readonly caseId: string
   /** Returns to the library. The store flushes its pending write on the way out. */
   readonly onClose: () => void
+  /** Opens the Speak screen. Same flush applies — Speak recompiles from what was written. */
+  readonly onSpeak: () => void
 }
 
 /**
@@ -37,9 +39,10 @@ export interface CaseEditorProps {
  * @param props - See {@link CaseEditorProps}.
  * @param props.caseId - Row to open.
  * @param props.onClose - Returns to the library.
+ * @param props.onSpeak - Opens the Speak screen.
  * @returns The Prep screen.
  */
-export function CaseEditor({ caseId, onClose }: CaseEditorProps): React.JSX.Element {
+export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React.JSX.Element {
   // Which section the user asked for. Null means "the first one", which is also the fallback
   // when a chosen section disappears — its substantive was deleted, or the mechanism question
   // turned the policy table off.
@@ -135,9 +138,15 @@ export function CaseEditor({ caseId, onClose }: CaseEditorProps): React.JSX.Elem
   return (
     <div className="grid h-full grid-cols-[13rem_1fr_19rem] overflow-hidden">
       <aside className="flex flex-col overflow-hidden border-r border-neutral-200 dark:border-neutral-800">
-        <div className="border-b border-neutral-200 p-2 dark:border-neutral-800">
+        <div className="flex flex-col gap-1.5 border-b border-neutral-200 p-2 dark:border-neutral-800">
           <button type="button" className="btn w-full" onClick={onClose}>
             ← Library
+          </button>
+          {/* Enabled whatever the completeness meter says: a half-filled case still compiles,
+              and seeing which lines are missing on the Speak screen is often what sends someone
+              back here to write them. */}
+          <button type="button" className="btn btn-primary w-full justify-center" onClick={onSpeak}>
+            Speak →
           </button>
         </div>
         <SectionNav
