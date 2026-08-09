@@ -16,6 +16,7 @@ import { setSeat, setVisibility } from '../case/update.ts'
 import { useAnalysis } from '../hooks/useAnalysis.ts'
 import type { SaveStatus } from '../hooks/useCaseStore.ts'
 import { useCaseStore } from '../hooks/useCaseStore.ts'
+import { isCoachEnabled } from '../coach/index.ts'
 import { useCoach } from '../hooks/useCoach.ts'
 import { useCoPrep } from '../hooks/useCoPrep.ts'
 import { usePrepTimer } from '../hooks/usePrepTimer.ts'
@@ -86,8 +87,10 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
     [labelByPath],
   )
 
-  // Layer B. Held here rather than inside the panel so a call survives the panel rerendering on
-  // every keystroke, and so the key status is read once per open rather than once per section.
+  // Layer B, and whether it is switched on at all. The hook is called unconditionally because
+  // hooks must be, but it does nothing when the flag is off — see `coach/config.ts` for why this
+  // is a flag rather than "is there an API key lying around".
+  const showCoach = isCoachEnabled()
   const coach = useCoach()
 
   const activeSection =
@@ -235,7 +238,7 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
         <CompletenessMeter completeness={completeness} />
         <PrepTimer timer={timer} completeness={completeness} />
         <DepthPanel findings={findings} sections={sections} onSelect={revealField} />
-        {role && (
+        {showCoach && role && (
           <CoachPanel
             caseFile={caseFile}
             role={role}

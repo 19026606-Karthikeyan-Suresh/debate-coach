@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { runAttack, runAudit, runPois } from '../coach/index.ts'
-import { readCoachStatus } from '../coach/index.ts'
+import { isCoachEnabled, readCoachStatus } from '../coach/index.ts'
 import type { CoachOutcome, CoachStatus, CoachTaskId } from '../coach/index.ts'
 import type { SpeakerRole } from '../formats/index.ts'
 import type { Case } from '../types/case.ts'
@@ -89,6 +89,12 @@ export function useCoach(): CoachController {
   const isMounted = useRef(true)
 
   const refresh = useCallback(async (): Promise<void> => {
+    // Nothing to ask when the panel is not rendered. Skipping the call rather than discarding
+    // its answer keeps a switched-off build from touching the shell at all — and from reporting
+    // a missing key that nobody is being shown a place to put.
+    if (!isCoachEnabled()) {
+      return
+    }
     const next = await readCoachStatus()
     if (isMounted.current) {
       setStatus(next)

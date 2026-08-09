@@ -86,6 +86,7 @@ export async function runPois(caseFile: Case, role: SpeakerRole): Promise<CoachO
 }
 
 export { readCoachStatus } from './client.ts'
+export { isCoachEnabled, parseCoachEnabled } from './config.ts'
 export type { CoachStatus } from './client.ts'
 export { AXIS_SCORE_LABELS, DEPTH_AXES, DEPTH_AXIS_DESCRIPTIONS, DEPTH_AXIS_LABELS } from './types.ts'
 export type {

@@ -38,10 +38,11 @@ compiler landed before any speech UI. The reference case compiles to a 1060-word
 - **Depth Analyzer** — causal-chain depth, missing impact axes, vague actors, substantive overlap,
   comparative weighing, link-back and more, as wavy underlines plus a depth panel. Never fires on
   an empty field; that is the completeness meter's job.
-- **Claude coaching (opt-in)** — `audit` scores a substantive and asks a question about each axis,
-  `attack` writes the opposition's three strongest responses, `poi` predicts what the other bench
-  will offer. Socratic by JSON schema, not by prompt wording: there is no field in the schema to
-  write your argument into.
+- **Claude coaching (opt-in, and off by default)** — `audit` scores a substantive and asks a
+  question about each axis, `attack` writes the opposition's three strongest responses, `poi`
+  predicts what the other bench will offer. Socratic by JSON schema, not by prompt wording: there
+  is no field in the schema to write your argument into. The panel does not appear unless
+  `VITE_ENABLE_COACH` is set — see [Claude coaching](#claude-coaching).
 - **Speech Trainer** — whisper.cpp transcribes live, a streaming Needleman–Wunsch aligner marks
   each script word spoken / skipped / pending, and the teleprompter follows your actual position.
   Format-aware timer with the POI window shaded and knocks at 1:00 and 6:00.
@@ -197,7 +198,23 @@ is decided by the RLS policies. See [`supabase/README.md`](supabase/README.md).
 
 ### Claude coaching
 
-Set `ANTHROPIC_API_KEY` and restart the app:
+**Off by default — the panel does not appear at all.** Two switches, deliberately separate:
+
+```
+VITE_ENABLE_COACH=true      # in .env — makes the panel exist
+ANTHROPIC_API_KEY=sk-ant-…  # the key itself, read by the Rust shell
+```
+
+The flag is separate from the key because `ANTHROPIC_API_KEY` is a de-facto standard that is
+often already exported for other tools, and a panel that switched itself on because of somebody
+else's environment — then made billed calls from a prep screen — is a surprise nobody asked for.
+Turning Layer B on is a decision, so it gets its own switch.
+
+Note the flag *is* `VITE_`-prefixed and the key is not. That is not an inconsistency: Vite inlines
+prefixed values into the frontend bundle, which is right for a boolean the UI needs and
+disqualifying for a secret.
+
+For the key, set it and restart the app:
 
 ```bash
 setx ANTHROPIC_API_KEY "sk-ant-..."
