@@ -20,6 +20,8 @@ import type { Case } from '../types/case.ts'
 import type { SpeechComment } from '../speech/comments.ts'
 import { supabaseConfig } from './config.ts'
 import {
+  bytesToPgHex,
+  pgHexToBytes,
   remoteRowToCase,
   remoteRowToComment,
   remoteRowToTeamCase,
@@ -680,4 +682,58 @@ export async function fetchRemoteCase(
     fail('could not open that case', error.message)
   }
   return data ? remoteRowToCase(data as RemoteCaseRow) : null
+}
+
+/**
+ * Stores the room's document so a late joiner needs no peer online.
+ *
+ * Only the case's owner can write this — `cases_update` grants nobody else — so a guest's
+ * install never calls it. That is the right shape rather than a limitation: the owner is the one
+ * whose row it is, and a squad where four people race to write one snapshot has four writers on
+ * one column for no gain.
+ *
+ * @param client - The client.
+ * @param caseId - The **host's** case id, which is also the room's id.
+ * @param state - From `Y.encodeStateAsUpdate`. The whole document, not a delta: a joiner with
+ *   nothing has nothing to apply a delta to.
+ * @throws If the update is rejected, which for a non-owner is an empty result rather than an
+ *   error — so a guest calling this fails silently and correctly.
+ */
+export async function pushDocState(
+  client: SupabaseClient,
+  caseId: string,
+  state: Uint8Array,
+): Promise<void> {
+  const { error } = await client
+    .from('cases')
+    .update({ ydoc_state: bytesToPgHex(state) })
+    .eq('id', caseId)
+  if (error) {
+    fail('could not save the co-prep document', error.message)
+  }
+}
+
+/**
+ * Reads the room's stored document.
+ *
+ * @param client - The client.
+ * @param caseId - The host's case id.
+ * @returns The snapshot, or null when there is none, when the case is not readable by this
+ *   identity, or when what came back is not a hex literal. All three mean the same thing to the
+ *   caller — wait for a peer — and none of them is a failure worth showing.
+ * @throws If the query itself fails.
+ */
+export async function fetchDocState(
+  client: SupabaseClient,
+  caseId: string,
+): Promise<Uint8Array | null> {
+  const { data, error } = await client
+    .from('cases')
+    .select('ydoc_state')
+    .eq('id', caseId)
+    .maybeSingle()
+  if (error) {
+    fail('could not open the co-prep document', error.message)
+  }
+  return pgHexToBytes((data as { ydoc_state: string | null } | null)?.ydoc_state ?? null)
 }

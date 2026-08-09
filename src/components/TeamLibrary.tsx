@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { browseTeamLibrary, importTeamCase } from '../sync/library.ts'
 import type { TeamCaseSummary } from '../sync/rows.ts'
+import { findLocalCaseForRoom, writeRoomLink } from '../sync/store.ts'
 import { getSupabase } from '../sync/supabase.ts'
 
 /** Props for {@link TeamLibrary}. */
@@ -75,17 +76,31 @@ export function TeamLibrary({
     }
   }, [teamId, userId, query])
 
+  /**
+   * Copies a teammate's case in, and optionally links the copy to their co-prep room.
+   *
+   * The copy is the same one "Copy to mine" makes — a fresh id, because `cases_update` grants the
+   * owner alone and four people cannot share one row. What co-prep adds is a note of *whose* room
+   * the copy belongs to, so the editor joins theirs rather than opening one of its own that
+   * nobody else is in.
+   */
   const handleImport = useCallback(
-    async (caseId: string): Promise<void> => {
+    async (caseId: string, forCoPrep: boolean): Promise<void> => {
       const client = getSupabase()
       if (!client) {
         return
       }
       setIsBusy(true)
       try {
-        const copy = await importTeamCase(client, caseId, new Date().toISOString())
+        // A second press must not make a second copy: the debater would then have two
+        // half-written local cases and no way to tell which one the room is feeding.
+        const existing = forCoPrep ? await findLocalCaseForRoom(caseId) : null
+        const localId = existing ?? (await importTeamCase(client, caseId, new Date().toISOString())).id
+        if (forCoPrep) {
+          await writeRoomLink(localId, caseId)
+        }
         onImported()
-        onOpen(copy.id)
+        onOpen(localId)
       } catch (importError) {
         setNotice(importError instanceof Error ? importError.message : String(importError))
       } finally {
@@ -142,10 +157,23 @@ export function TeamLibrary({
               className="btn"
               disabled={isBusy}
               onClick={() => {
-                void handleImport(entry.id)
+                void handleImport(entry.id, false)
               }}
             >
               Copy to mine
+            </button>
+            {/* Same copy, plus a link back to the owner's room. Separate buttons because taking
+                last season's prep to adapt and sitting down to write this round together are
+                different things, and the second one puts your keystrokes on somebody's screen. */}
+            <button
+              type="button"
+              className="btn"
+              disabled={isBusy}
+              onClick={() => {
+                void handleImport(entry.id, true)
+              }}
+            >
+              Co-prep
             </button>
           </li>
         ))}

@@ -366,3 +366,66 @@ export async function cachedTeamLibrary(
     updatedAt: row.updated_at,
   }))
 }
+
+// ---------------------------------------------------------------------------
+// Co-prep room links
+// ---------------------------------------------------------------------------
+
+/**
+ * Prefix for "this local case is a copy of that room's case".
+ *
+ * A settings key rather than a column, because it is a fact about *this install's* copy and not
+ * about the case document — the same reasoning that keeps `position` and `visibility` out of the
+ * shared document. The host needs no entry: the room's id is its own case id.
+ */
+const ROOM_LINK_PREFIX = 'coprep.room.'
+
+/**
+ * Which room a local case is joined to.
+ *
+ * @param localCaseId - The case as it exists on this install.
+ * @returns The **host's** case id, or null when this install owns the case and is therefore the
+ *   host of its room.
+ */
+export async function readRoomLink(localCaseId: string): Promise<string | null> {
+  return readSetting(`${ROOM_LINK_PREFIX}${localCaseId}`)
+}
+
+/**
+ * Records, or clears, which room a local case belongs to.
+ *
+ * @param localCaseId - The local copy.
+ * @param roomCaseId - The host's case id, or null to forget the link.
+ */
+export async function writeRoomLink(
+  localCaseId: string,
+  roomCaseId: string | null,
+): Promise<void> {
+  await writeSetting(`${ROOM_LINK_PREFIX}${localCaseId}`, roomCaseId)
+}
+
+/**
+ * Finds the copy this install already made of a room's case.
+ *
+ * Without this, pressing "co-prep" twice on the same shared case makes a second copy and puts the
+ * debater in the room with two half-written local cases and no way to tell which is which.
+ *
+ * @param roomCaseId - The host's case id.
+ * @returns The local case id, or null when nothing has been copied yet.
+ */
+export async function findLocalCaseForRoom(roomCaseId: string): Promise<string | null> {
+  const database = await getDatabase()
+  const rows = await database.select<{ key: string }[]>(
+    "SELECT key FROM app_settings WHERE key LIKE $1 AND value = $2",
+    [`${ROOM_LINK_PREFIX}%`, roomCaseId],
+  )
+  const key = rows[0]?.key
+  if (key === undefined) {
+    return null
+  }
+  // The copy can have been deleted since; a link to a case that is gone is not a copy.
+  const found = await database.select<{ id: string }[]>('SELECT id FROM cases WHERE id = $1', [
+    key.slice(ROOM_LINK_PREFIX.length),
+  ])
+  return found[0]?.id ?? null
+}

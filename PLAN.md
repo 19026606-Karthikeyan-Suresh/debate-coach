@@ -30,7 +30,7 @@ SQLite in the Tauri app is the **source of truth**. Supabase is a replication ta
 | Concern | Mechanism |
 |---|---|
 | Team library | Postgres with a generated `tsvector` + GIN index — server-side full-text search across the whole team's cases and motions |
-| Live co-prep | Yjs CRDT over Supabase Realtime broadcast, one channel per case |
+| Live co-prep | Yjs CRDT over Supabase Realtime broadcast, one private channel per case |
 | Identity | Supabase anonymous sign-in → persistent `auth.uid()` stored in the Windows credential store |
 | Membership | `join_team(code)` Postgres function, `SECURITY DEFINER`, validates a hashed invite code and inserts a `team_members` row |
 | Access control | RLS on every table, keyed off `team_members`; `visibility = 'private'` restricts to owner |
@@ -42,7 +42,7 @@ SQLite in the Tauri app is the **source of truth**. Supabase is a replication ta
 
 **Recordings are encoded before upload.** Seven minutes of 16 kHz mono WAV is ~13 MB; the same speech as Opus at 24 kbps is ~1.2 MB. The WAV stays local for re-transcription, the Opus goes to the server. That's the difference between filling the free tier in 70 speeches and filling it in 800.
 
-**Bad-wifi fallback.** Prep rooms have notoriously poor connectivity, which is exactly when co-prep matters most. Supabase Realtime is the default transport; `y-webrtc` over the local network is the fallback for a room with no internet. Same CRDT either way — only the provider swaps. Built last.
+**Bad-wifi fallback.** Prep rooms have notoriously poor connectivity, which is exactly when co-prep matters most. Supabase Realtime is the default transport; a local-network room is the fallback for a room with no internet. Same CRDT either way — only the provider swaps. Built last. *(Phase 11: the LAN half is **not** `y-webrtc`, and the reason is in `src-tauri/src/lan.rs` — WebRTC needs a signalling channel that already exists, and `y-webrtc` supplies one by defaulting to servers on the internet, which in a room with no internet are exactly as unreachable as Supabase.)*
 
 ---
 
@@ -50,7 +50,7 @@ SQLite in the Tauri app is the **source of truth**. Supabase is a replication ta
 
 - **Tauri v2** shell (Rust), **React 19 + TypeScript + Vite** frontend, Tailwind v4. One installer per teammate; ~10 MB shell.
 - **SQLite** via `tauri-plugin-sql` — local source of truth, and full-text search over the cached library when offline.
-- **Yjs** for the case document from day one, so collaboration is a provider toggle rather than a rewrite.
+- **Yjs** for the case document, so collaboration is a provider toggle rather than a rewrite. *(Phase 11 found that "from day one" never happened and did not need to have: the CRDT went underneath the finished immutable-edit pipeline without changing a single reader. See `src/collab/`.)*
 - **Supabase JS** for sync, realtime, storage; service-role operations never leave Rust.
 - **whisper.cpp** as a Tauri sidecar binary.
 - **Rust side**: sidecar lifecycle, audio piping, Opus encoding, Anthropic proxy with the key in the OS keychain (`tauri-plugin-stronghold`), sync queue.
@@ -69,7 +69,7 @@ sessions(id, team_id, user_id, case_id, format, role,
 comments(id, session_id, author_id, t_seconds, body)     -- coach feedback anchored to a timestamp
 ```
 
-`ydoc_state` is persisted periodically so someone joining a co-prep room late gets the document without a peer online. `comments` is the payoff for uploading recordings — a coach scrubs to 4:12 and leaves a note there.
+`ydoc_state` is persisted periodically so someone joining a co-prep room late gets the document without a peer online — written by the case's **owner** only, since `cases_update` grants nobody else. `comments` is the payoff for uploading recordings — a coach scrubs to 4:12 and leaves a note there.
 
 **One column was added locally and is deliberately not in the list above.** Phase 6's migration 2 gives the local `sessions` a `report TEXT`, and the split is by what leaves the machine: `metrics` is a dozen numbers — skip rate, filler rate, pace — and is what phase 9 replicates so a squad can see each other's trends; `report` is the detail behind them, including the transcript and every skipped clause the debater wrote. That is a recording of somebody speaking, held in text, and it stays local until there is an explicit reason for it not to. **Phase 9 decided: no column.** `recording_path` went the same way for the same reason — locally it is `C:\Users\<name>\...`, which is a path on one machine and a person's name on the wire, so the Postgres column holds a storage object key and phase 10 writes it.
 
@@ -96,6 +96,34 @@ comments(id, session_id, author_id, t_seconds, body)     -- coach feedback ancho
 **Deliberately not built: the recording upload.** The bucket, its four policies, `storage_team_id` and `sessions.recording_path` all ship, so phase 10 is an upload call and not a schema change. What is missing is the Opus encode, and it is missing because the obvious way to add it is wrong twice over: the `opus` bindings need cmake, which is the exact C toolchain phase 7 refused to put between a teammate and a build, and the alternative — a `MediaRecorder` on the stream the capture graph already opens — changes the phase 5 capture path that **no microphone has ever been through**. Layering an unverifiable change on an unverifiable base is how two things break at once. It belongs in phase 10, beside the playback it exists for, and behind a working microphone. Verification step 13 stays open.
 
 **Phase 10 confirmed the schema half exactly and found the third way on the encode.** Nothing in `supabase/migrations/` changed: the bucket, the four storage policies and the comment policies were already what an upload and a comment thread need, which is what "an upload call and not a schema change" was worth. The encode is a *pure-Rust port* of libopus — a route neither of the two wrong ones covers, because it builds with cargo alone and it reads a finished WAV rather than touching capture. Three assertions were added to the RLS suite for the two directions phase 10 made reachable and phase 9 had no caller for: the debater whose speech it is can read a coach's note on it, cannot delete it, and the coach can.
+
+---
+
+## Live co-prep — `src/collab/`, `src/sync/provider.ts`, `src-tauri/src/lan.rs`
+
+### What the build settled
+
+**"Yjs from day one" never happened, and phase 11 is the evidence it did not need to.** The decision was written down in phase 0 and quietly skipped in every phase after it: `yjs` sat in `package.json` for ten phases and was imported by nothing, while the case stayed a plain immutable object edited through `setFieldByPath`. The insurance it was supposed to buy was against a rewrite — and the rewrite turns out not to exist, because **the addressing scheme was already the CRDT's**. Phase 2 gave every row a path, phase 3 sent findings to it, phase 4 stamped it on every script token; a document keyed by that same string slides underneath the finished editor and every reader downstream still gets a plain `Case`. What ten phases of not doing it cost was nothing. What they bought was a settled data model to key against.
+
+**A case flattens into three things, and the split is by what merging means.** `text` rows become `Y.Text` and merge character by character, because two debaters writing one row must both keep their words. `scalar` rows — the branch of the "(OR)" fork, whether the POLICY block exists — are last-writer-wins, which is *correct*: nobody can half-pick a branch. `list` rows are ordered sets of uuids, so two people adding a substantive at once end up with two. Measured on the reference case: 78 leaves, 8 lists, 9,157 bytes of full state.
+
+**Five fields are deliberately not shared, and one of them is the interesting one.** `id` and `createdAt`, because every participant keeps their own row and `cases_update` grants the owner alone — four people sharing one id would give three of them a row they cannot write. `updatedAt`, because a timestamp both sides rewrite on every keystroke conveys nothing and the sync queue compares it against *this* install's server row. `visibility`, because who may read your copy is your decision. And **`position` — the seat — because that is the whole point**: a PM and a DPM co-prepping one round are filling different blocks of the same content, and sharing the seat would move one of them out of it mid-prep.
+
+**An edit is written to the document as a delta, never as a snapshot.** The natural implementation diffs the local case against the document and writes the difference. It is wrong in three ways that all look identical from one side — the local case is simply out of date, which it is for one render after every remote update and for the whole of a partition. Reconciling a snapshot resurrects a row a peer deleted, deletes a row a peer added, and — worst — reads a peer's words in the same field as text the local user must have selected over, and deletes them. Sending `diffText(before, after)` at the position the user made it is what a real Yjs binding does, and it is what leaves the merge to the only thing that can do it correctly. Three tests exist for exactly those three interleavings.
+
+**The React wiring is where the last keystroke gets lost, so there is no effect in the path.** Mirroring `caseFile` into the CRDT from an effect drops a character whenever a peer's update lands between a keystroke and the effect that would have pushed it — a one-render window, and the one bug a text editor may not have. `useCoPrep.update` instead reads the live `Y.Doc`, applies the edit to it and projects back, all synchronously inside the event handler. The store underneath is untouched and still owns SQLite, so a room is a layer over the local-first path rather than a replacement: pull the network and the case keeps saving.
+
+**Presence is a heartbeat in the protocol, not a feature of the transport.** Supabase Realtime has one that would do half the job for free — but only half, because the LAN fallback has no Supabase in it, and a room where the roster works differently depending on the wire is a room with two bugs to find. One pure implementation over one message type serves both, and it carries something a socket-level presence never could: the field path the peer's caret is in. "Sam is writing Sub 2's mechanism" is what stops two people landing on one row; "Sam is online" is not.
+
+**Updates are batched at 120 ms because the throttle is ten a second.** A debater types faster than that, and one message per keystroke is dropped frames during exactly the burst that matters. Yjs merges losslessly, so a flush interval collapses a burst of twenty-two keystrokes into one message — pinned by a test that counts frames on the wire.
+
+**The LAN fallback is not `y-webrtc`, and the reason is that `y-webrtc` cannot do the job it was named for.** WebRTC cannot introduce two peers to each other: every connection is negotiated over a signalling channel that has to already exist, and `y-webrtc` supplies that by defaulting to public servers on the internet — which in a prep room with no internet are exactly as unreachable as Supabase. So "the LAN fallback" means running a signalling server on the LAN regardless, and once one laptop is running a server, WebRTC's whole reason for existing is gone. What remains of it is ICE negotiation inside a webview plus three dependencies, one of which phones a public host by default. `lan.rs` is the server that argument leaves behind: UDP broadcast discovery, a TCP relay, `std::net` and threads, no new crates. **The host joins its own relay over loopback**, which is worth the extra socket because it makes the host and the guests run identical client code.
+
+**A co-prep room is authorised by the same predicate that decides who can read the case.** A Realtime broadcast channel is public by default and the anon key ships inside the app, so a room named after a case would otherwise be a live feed of a squad's prep to anyone who guessed a case id. Migration 6 puts RLS on `realtime.messages`, resolving `case:<uuid>` back to a row through `cases_select`'s own condition. Reading a case and co-prepping it are deliberately the same permission — writing the *row* stays owner-only, and that is not a contradiction: the room is a shared document and the row is one person's copy of it. This is the answer phase 9 deferred when it wrote that two writers on one document is phase 11's problem and Yjs is its answer, not a second write policy.
+
+**Two consequences of that, both of which the panel has to say out loud.** A private case has a room of one, so the panel says so in those words with the visibility switch beside it rather than reporting a channel error. And a project that has never had migration 6 applied refuses every room — **measured live**: `Unauthorized: You do not have permissions to read from this Channel topic: case:<uuid>`. That is the right way round to fail, and it is why the panel prints its own sentence first and the server's after it: the first names the fix for the common cause, the second is the only thing that diagnoses the rare one.
+
+**A defect the browser found rather than the tests.** Focus is read off the section container, because every input already carries `id={field.path}` for the depth panel to focus — so the address a teammate needs is on the event and no field component changes. But `focusout` fires before the next `focusin`, so clearing unconditionally made every Tab between two rows report "nowhere" and then the new row: two presence messages per keypress against a ten-a-second throttle, and a panel that blinks while a teammate walks the template. It now clears only when focus leaves the editor. Found by walking focus in a browser and reading the sequence — and the walk had to be driven with synthetic `focusin`/`focusout`, because the pane is not composited, `document.hasFocus()` is false, and **a document without focus never dispatches the native events at all**. That is the same compositing fact as the missing screenshot, from a third side.
 
 ---
 
@@ -409,6 +437,7 @@ src-tauri/
   src/coach.rs             Anthropic calls, keychain-backed key
   src/export.rs            extension-checked file write + `.dbcase` read
   src/sync.rs              the Supabase session, chunked across credential entries
+  src/lan.rs               UDP discovery + a TCP relay, for a room with no internet
   src/db.rs                SQLite migrations
 src/
   main.tsx, App.tsx
@@ -433,7 +462,14 @@ src/
   sync/engine.ts           the drain: cases before sessions, failure per row
   sync/library.ts          browse online or cached, and copy a teammate's case
   sync/recordings.ts       encode, share, fetch and take back down
-  sync/provider.ts         Yjs over Realtime; y-webrtc LAN fallback (phase 11)
+  sync/provider.ts         the two wires: Supabase Realtime, and the Rust LAN relay
+  collab/shape.ts          a case flattened to its own field paths; both directions (pure)
+  collab/textDiff.ts       whole-value replacement -> one splice (pure)
+  collab/doc.ts            the Y.Doc, and one immutable edit as the smallest CRDT delta
+  collab/protocol.ts       the four messages a room speaks, and base64 (pure)
+  collab/presence.ts       the roster, from heartbeats (pure)
+  collab/session.ts        handshake, batching, presence, echo suppression — transport-free
+  hooks/useCoPrep.ts       one room for one open case
   hooks/useSync.ts         sign-in, teams, drain — one screen's worth of state
   coach/types.ts           CoachResult, DepthAxis, CoachPrompt — Layer B's contract
   coach/schema.ts          the JSON schemas; the structural half of the Socratic rule
@@ -495,7 +531,7 @@ src/
 8. ~~Export + `.docx` / `.dbcase`~~ — done
 9. ~~Supabase: schema, RLS, invite-code join, library sync~~ — done *(recording upload moved to 10, with the microphone it needs)*
 10. ~~Coach comments on recordings, and the Opus upload they are anchored to~~ — done
-11. Live co-prep over Realtime, then the y-webrtc LAN fallback ← **next**
+11. ~~Live co-prep over Realtime, then the LAN fallback~~ — done *(the fallback is a relay in the Rust shell, not `y-webrtc`)*
 
 ---
 
@@ -632,13 +668,15 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
 
 **`crdt-sync` is split rather than kept.** The Yjs document shape and the doc↔row projection are design work tangled with the data model and the editor — inline. The convergence tests under partition are adversarial against a finished provider, and that half is agent work; fold it into phase 11 as a test brief rather than an agent that owns the feature.
 
+**Phase 11 shipped without the agent half too, and for the fourth time the same reason.** The split was right about which part was adversarial: the convergence tests are exactly that, and they are the strongest thing in the phase. But they could not have been written against "a finished provider", because the three interleavings that mattered — a resurrected delete, a deleted addition, a clobbered sentence — are not failures of the *provider*. They are failures of the seam between an immutable-edit pipeline and a CRDT, and the only way to see them is to have just written that seam and noticed that a stale snapshot is indistinguishable from a partition. A cold agent handed a finished provider would have tested the provider, which was never where the bug was. What survives is the convention, again: **every convergence assertion runs two documents and a wire the test can take down** — a merge cannot be checked by reading it, exactly as a policy cannot.
+
 **Still not agents.** The Case Builder UI, the script compiler, and the export path are one-off, highly interdependent, and easier to hold in one head than to brief — build those inline. Phases 1–3 confirmed it, and **phase 8 confirmed the export half specifically, though not for the reason given.** The export path is neither interdependent nor hard to brief; a ZIP writer and an OOXML emitter are about as isolated and as fixed-target as work gets. What an agent would have shipped is a file that is well-formed XML and that Word discards half of, because the win condition it would have been briefed against — "the reader gets the text back" — is satisfied by exactly that file. The thing that caught it was opening the result in Word, which is not a brief, it is knowing what would still be wrong once the tests passed.
 
 ---
 
 ## Verification
 
-1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 863 tests across 40 files, alongside `cargo test` at 62.
+1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 907 tests across 44 files, alongside `cargo test` at 68.
 2. **Regression fixture from real work.** Seed the fake-news case from my friend's filled example (`reference/template-filled-example.docx`). It has genuine, checkable defects the analyzer must catch:
    - `subOverlap` flags Sub 1 ("fake news causes irreparable damage") against Sub 2 ("allowing the spread is supporting it") — they share most of their content vocabulary.
    - `vagueness` flags "damages lives", "individuals in society", "many damages".
@@ -693,5 +731,14 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
     - **The comment policies were already right and are now proved from both ends.** Phase 9 tested a coach writing a note and an outsider being unable to read it; phase 10 adds that the debater whose speech it is *can* read it, *cannot* delete it — a hidden button is not an access control, and advice you can delete is advice you can ignore quietly — and that the coach can delete their own.
 
     **Still open**: no second machine, and still no microphone. Every recording that has been through this is a generated tone, and the round trip has run against one install. What only two installs can settle is the part of the sentence after "and": a comment left on a teammate's speech reaching the person who gave it. Everything under it is proved — the storage policies against a real Postgres and a hosted project, the comment policies both ways, the upload path itself — but the wire has not carried an actual speech.
-14. **Co-prep test** — two instances edit different fields of one case simultaneously; confirm convergence with no lost text. Pull one machine off the network mid-edit and confirm it reconciles on rejoin. Then kill internet on both and confirm the LAN fallback still merges.
+14. **Co-prep test** — two instances edit different fields of one case simultaneously; confirm convergence with no lost text. Pull one machine off the network mid-edit and confirm it reconciles on rejoin. Then kill internet on both and confirm the LAN fallback still merges. **Built, and everything except two installs is proved.**
+
+    - **Convergence is proved against two real documents, not described.** `src/collab/__tests__/doc.test.ts` runs two `Y.Doc`s through a wire a test can take down: two fields edited at once both survive; two people typing in *one* field keep both sentences, one inserting at the head and one at the tail; two concurrent "add a substantive" produce two substantives with the same ids on both sides; and a guest who types a whole row one keystroke at a time while partitioned reconciles with a host who was writing elsewhere. Three further tests cover the interleavings a snapshot-diff would get wrong — a resurrected delete, a deleted addition, and a clobbered sentence.
+    - **The protocol is proved by running two whole sessions**, the same code both shipped transports drive, over an in-memory link: a joiner is handed the case with nobody elected to give it, an edit crosses both ways, twenty-two keystrokes leave as one message, the roster fills and empties, a peer that goes quiet times out, and four malformed frames in a row do not take the room down.
+    - **The relay is proved in `cargo test`** with real sockets on loopback: a frame round-trips through the length prefix, the sender never receives its own, three other peers all get it, a dropped peer is forgotten rather than blocking the room, and a length prefix past the cap is refused instead of allocating. Discovery answers its own room over a real UDP broadcast and stays silent for another squad's.
+    - **The policies are proved against a real Postgres**, paired both ways as phase 9 requires: the owner and a teammate can join a shared case's room; a teammate cannot join a private one and the other team cannot join either; six malformed topics are *denied rather than raised*, which is the `storage_team_id` trap again; a teammate can broadcast and the other team is refused with `row-level security`; a teammate reads the room's messages and the other team reads none; and un-sharing a case closes the room, which is what stops "make this private again" leaving a live feed open.
+    - **Live, against the hosted project**: Realtime is reachable, two anonymous identities both subscribe, and a broadcast round-trips carrying the exact `CollabMessage` — as a parsed object, which is why the parser takes one. A private room for a case that is not there is refused with `Unauthorized: You do not have permissions to read from this Channel topic`, so **the default is deny and a project without migration 6 fails closed**.
+    - **The panel was driven in a browser** rather than looked at: all four states render with the right buttons enabled, nothing encoding a peer's position carries a CSS transition (`0s` on every one; the only 0.15 s is `.btn`'s hover colours), the panel does not overflow the rail, and the focus walk reports one path per field with no null between adjacent rows — which is the defect that walk was written to find.
+
+    **Still open**: two installs, and migration 6 on the hosted project. Everything above ran on one machine, so what is unproved is the sentence's own subject — a teammate's keystrokes arriving on somebody else's screen. Nothing about that is unlikely: the transport carries a broadcast between two clients live, the CRDT converges between two documents, and the policy is proved against real Postgres. But the three have not been in one room together, and the migration that opens the room has not been applied to a project.
 15. **Conventions hold** — `npm run lint` and `cargo clippy -- -D warnings` both pass with the docstring rules on. Then delete a docstring and a param description and confirm CI actually fails, so the rule isn't quietly disabled.

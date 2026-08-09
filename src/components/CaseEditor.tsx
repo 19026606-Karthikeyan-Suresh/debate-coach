@@ -11,14 +11,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { groupFindingsByPath } from '../analysis/index.ts'
 import { getFormat, getRole } from '../formats/index.ts'
 import { measureSections } from '../case/completeness.ts'
-import { buildSections } from '../case/sections.ts'
+import { buildSections, flattenFields } from '../case/sections.ts'
 import { setSeat, setVisibility } from '../case/update.ts'
 import { useAnalysis } from '../hooks/useAnalysis.ts'
 import type { SaveStatus } from '../hooks/useCaseStore.ts'
 import { useCaseStore } from '../hooks/useCaseStore.ts'
 import { useCoach } from '../hooks/useCoach.ts'
+import { useCoPrep } from '../hooks/useCoPrep.ts'
 import { usePrepTimer } from '../hooks/usePrepTimer.ts'
 import { CoachPanel } from './CoachPanel.tsx'
+import { CoPrepPanel } from './CoPrepPanel.tsx'
 import { CompletenessMeter } from './CompletenessMeter.tsx'
 import { DepthPanel } from './DepthPanel.tsx'
 import { ExportPanel } from './ExportPanel.tsx'
@@ -52,7 +54,13 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
   const [pendingSectionId, setPendingSectionId] = useState<string | null>(null)
 
   const store = useCaseStore(caseId)
-  const { caseFile, update } = store
+  const { caseFile } = store
+
+  // Co-prep wraps the store's `update` rather than replacing it: with no room open it *is* the
+  // store's, and with one open every edit goes through the shared document first. The editor
+  // below uses `update` unconditionally and never branches on whether a room is running.
+  const coPrep = useCoPrep(caseFile, store.update)
+  const update = coPrep.update
 
   const format = caseFile ? getFormat(caseFile.format) : null
   const role = caseFile ? getRole(caseFile.format, caseFile.position) : undefined
@@ -66,6 +74,17 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
 
   const findings = useAnalysis(caseFile, role)
   const findingsByPath = useMemo(() => groupFindingsByPath(findings), [findings])
+
+  // Field paths to the template's own question, so a teammate's position reads as "in 'Why is
+  // the problem so bad?'" rather than as a uuid.
+  const labelByPath = useMemo(
+    () => new Map(flattenFields(sections).map((field) => [field.path, field.label])),
+    [sections],
+  )
+  const labelForPath = useCallback(
+    (fieldPath: string): string | null => labelByPath.get(fieldPath) ?? null,
+    [labelByPath],
+  )
 
   // Layer B. Held here rather than inside the panel so a call survives the panel rerendering on
   // every keystroke, and so the key status is read once per open rather than once per section.
@@ -164,7 +183,27 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
         />
       </aside>
 
-      <main id="section-scroll" className="overflow-y-auto p-6">
+      {/* Focus is read off the container rather than wired into `FieldEditor`, because every
+          input there already carries `id={field.path}` for the depth panel to focus — so the
+          address a teammate needs is on the event, and no field component changes. */}
+      <main
+        id="section-scroll"
+        className="overflow-y-auto p-6"
+        onFocusCapture={(event) => {
+          const fieldPath = (event.target as HTMLElement).id
+          coPrep.setFieldPath(fieldPath === '' ? null : fieldPath)
+        }}
+        onBlurCapture={(event) => {
+          // `focusout` fires before the next `focusin`, so clearing unconditionally makes every
+          // Tab between two rows report "nowhere" and then the new row — two presence messages
+          // per keypress against a ten-a-second throttle, and a panel that blinks while a
+          // teammate walks the template. Only a focus leaving the editor entirely clears it.
+          const next = event.relatedTarget
+          if (!(next instanceof HTMLElement) || !event.currentTarget.contains(next)) {
+            coPrep.setFieldPath(null)
+          }
+        }}
+      >
         {role && activeSection ? (
           <div className="mx-auto max-w-2xl">
             <SectionView
@@ -205,6 +244,13 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
             update={update}
           />
         )}
+
+        <CoPrepPanel
+          coPrep={coPrep}
+          caseFile={caseFile}
+          roles={format.roles}
+          labelForPath={labelForPath}
+        />
 
         <ExportPanel caseFile={caseFile} role={role} />
 
