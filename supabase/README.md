@@ -40,10 +40,11 @@ the app never asks for an email, and every identity in the schema is an anonymou
 
 **Migration 6 is what turns co-prep on**, and until it has run no room opens at all. A private
 Realtime channel is default-deny, so a project missing it answers every join with
-`Unauthorized: You do not have permissions to read from this Channel topic: case:<uuid>` —
-measured against a live project, and the reason the panel prints the server's message after its
-own. That is the right way round to fail: forgetting the migration closes co-prep rather than
-leaving a squad's prep readable by anyone holding the anon key.
+`Unauthorized: You do not have permissions to read from this Channel topic: case:<uuid>` and has
+no `can_join_case_room` to call — both measured against a live project before and after applying
+it, and the reason the panel prints the server's message after its own. That is the right way
+round to fail: forgetting the migration closes co-prep rather than leaving a squad's prep
+readable by anyone holding the anon key.
 
 ## What is being relied on
 
