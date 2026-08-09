@@ -72,6 +72,7 @@ revoke all on public.teams from anon, authenticated;
 -- its code changed by `rotate_invite_code`, both of which check what they need to.
 grant select (id, name, invite_rotated_at, created_at) on public.teams to authenticated;
 
+drop policy if exists teams_select_own on public.teams;
 create policy teams_select_own on public.teams
     for select to authenticated
     using (public.is_team_member(id));
@@ -87,17 +88,20 @@ revoke all on public.team_members from anon, authenticated;
 -- validates the invite code; an insert policy here would be a way in without one.
 grant select, update, delete on public.team_members to authenticated;
 
+drop policy if exists team_members_select_teammates on public.team_members;
 create policy team_members_select_teammates on public.team_members
     for select to authenticated
     using (public.is_team_member(team_id));
 
 -- Your own display name, or an admin changing anyone's role.
+drop policy if exists team_members_update on public.team_members;
 create policy team_members_update on public.team_members
     for update to authenticated
     using (user_id = (select auth.uid()) or public.is_team_admin(team_id))
     with check (user_id = (select auth.uid()) or public.is_team_admin(team_id));
 
 -- Leaving, or an admin revoking someone.
+drop policy if exists team_members_delete on public.team_members;
 create policy team_members_delete on public.team_members
     for delete to authenticated
     using (user_id = (select auth.uid()) or public.is_team_admin(team_id));
@@ -113,6 +117,7 @@ grant select, insert, update, delete on public.cases to authenticated;
 
 -- `visibility = 'private'` is the escape hatch the architecture promises: prep you do not want
 -- the squad reading stays yours even inside a team.
+drop policy if exists cases_select on public.cases;
 create policy cases_select on public.cases
     for select to authenticated
     using (
@@ -120,6 +125,7 @@ create policy cases_select on public.cases
         or (visibility = 'team' and public.is_team_member(team_id))
     );
 
+drop policy if exists cases_insert on public.cases;
 create policy cases_insert on public.cases
     for insert to authenticated
     with check (
@@ -129,6 +135,7 @@ create policy cases_insert on public.cases
 
 -- Only the owner edits, including a coach. A teammate silently rewriting your case an hour
 -- before a round is a worse failure than having to ask them for the change.
+drop policy if exists cases_update on public.cases;
 create policy cases_update on public.cases
     for update to authenticated
     using (owner_id = (select auth.uid()))
@@ -137,6 +144,7 @@ create policy cases_update on public.cases
         and (team_id is null or public.is_team_member(team_id))
     );
 
+drop policy if exists cases_delete on public.cases;
 create policy cases_delete on public.cases
     for delete to authenticated
     using (owner_id = (select auth.uid()));
@@ -150,19 +158,23 @@ alter table public.motions enable row level security;
 revoke all on public.motions from anon, authenticated;
 grant select, insert, update, delete on public.motions to authenticated;
 
+drop policy if exists motions_select on public.motions;
 create policy motions_select on public.motions
     for select to authenticated
     using (public.is_team_member(team_id));
 
+drop policy if exists motions_insert on public.motions;
 create policy motions_insert on public.motions
     for insert to authenticated
     with check (public.is_team_member(team_id) and created_by = (select auth.uid()));
 
+drop policy if exists motions_update on public.motions;
 create policy motions_update on public.motions
     for update to authenticated
     using (created_by = (select auth.uid()) or public.is_team_admin(team_id))
     with check (public.is_team_member(team_id));
 
+drop policy if exists motions_delete on public.motions;
 create policy motions_delete on public.motions
     for delete to authenticated
     using (created_by = (select auth.uid()) or public.is_team_admin(team_id));
@@ -178,6 +190,7 @@ grant select, insert, update, delete on public.sessions to authenticated;
 
 -- Teammates see each other's numbers, which is what makes the history screen a squad tool. A
 -- session with no `team_id` was recorded outside a team and stays private to its owner.
+drop policy if exists sessions_select on public.sessions;
 create policy sessions_select on public.sessions
     for select to authenticated
     using (
@@ -185,6 +198,7 @@ create policy sessions_select on public.sessions
         or (team_id is not null and public.is_team_member(team_id))
     );
 
+drop policy if exists sessions_insert on public.sessions;
 create policy sessions_insert on public.sessions
     for insert to authenticated
     with check (
@@ -192,11 +206,13 @@ create policy sessions_insert on public.sessions
         and (team_id is null or public.is_team_member(team_id))
     );
 
+drop policy if exists sessions_update on public.sessions;
 create policy sessions_update on public.sessions
     for update to authenticated
     using (user_id = (select auth.uid()))
     with check (user_id = (select auth.uid()));
 
+drop policy if exists sessions_delete on public.sessions;
 create policy sessions_delete on public.sessions
     for delete to authenticated
     using (user_id = (select auth.uid()));
@@ -214,10 +230,12 @@ grant select, insert, update, delete on public.comments to authenticated;
 -- applies to it, so "a comment you may read" resolves to "a comment on a session you may read"
 -- without restating either rule. A SECURITY DEFINER helper would bypass sessions' policy and
 -- have to reimplement it.
+drop policy if exists comments_select on public.comments;
 create policy comments_select on public.comments
     for select to authenticated
     using (exists (select 1 from public.sessions where sessions.id = comments.session_id));
 
+drop policy if exists comments_insert on public.comments;
 create policy comments_insert on public.comments
     for insert to authenticated
     with check (
@@ -225,11 +243,13 @@ create policy comments_insert on public.comments
         and exists (select 1 from public.sessions where sessions.id = comments.session_id)
     );
 
+drop policy if exists comments_update on public.comments;
 create policy comments_update on public.comments
     for update to authenticated
     using (author_id = (select auth.uid()))
     with check (author_id = (select auth.uid()));
 
+drop policy if exists comments_delete on public.comments;
 create policy comments_delete on public.comments
     for delete to authenticated
     using (author_id = (select auth.uid()));

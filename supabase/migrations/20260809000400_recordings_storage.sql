@@ -36,6 +36,7 @@ $$;
 grant execute on function public.storage_team_id(text) to authenticated;
 
 -- Uploading. The team in the path has to be one you are in, and the object has to be yours.
+drop policy if exists recordings_insert on storage.objects;
 create policy recordings_insert on storage.objects
     for insert to authenticated
     with check (
@@ -46,6 +47,7 @@ create policy recordings_insert on storage.objects
 
 -- Listening. Any teammate, which is the point of uploading it — a coach cannot leave a comment
 -- at 4:12 on a recording they cannot play.
+drop policy if exists recordings_select on storage.objects;
 create policy recordings_select on storage.objects
     for select to authenticated
     using (
@@ -55,11 +57,13 @@ create policy recordings_select on storage.objects
 
 -- Replacing and removing stay with whoever recorded it. A teammate deleting your speech is not
 -- a squad feature.
+drop policy if exists recordings_update on storage.objects;
 create policy recordings_update on storage.objects
     for update to authenticated
     using (bucket_id = 'recordings' and owner_id = (select auth.uid())::text)
     with check (bucket_id = 'recordings' and owner_id = (select auth.uid())::text);
 
+drop policy if exists recordings_delete on storage.objects;
 create policy recordings_delete on storage.objects
     for delete to authenticated
     using (bucket_id = 'recordings' and owner_id = (select auth.uid())::text);
