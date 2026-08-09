@@ -335,7 +335,7 @@ The cost is latency against a true streaming decoder. What it buys: window lengt
 
 **Audio crosses IPC as a raw request body**, not as a command argument — a minute of speech is a million samples and serialising those as a JSON array of numbers costs more than transcribing them. The whole speech is held in memory (13 MB for seven minutes) and written to WAV once at the end, which is also what lets the worker re-read the window at any offset without seeking a file that is still being written.
 
-**`bundle.externalBin` is not in the committed config.** `tauri-build` validates it, so naming a binary that is not on disk fails `cargo build` — and therefore clippy and CI — for anyone who has not first downloaded 640 MB of model weights. Bundling moved to `tauri.bundle-whisper.conf.json`, merged in at release time only. Runtime resolution searches next to the executable first (where a bundled sidecar lands) then app-data (where `scripts/fetch-whisper.ps1` installs it), so the same code serves both without a build flag.
+**`bundle.externalBin` is not in the committed config.** `tauri-build` validates it, so naming a binary that is not on disk fails `cargo build` — and therefore clippy, and any CI added later — for anyone who has not first downloaded 640 MB of model weights. Bundling moved to `tauri.bundle-whisper.conf.json`, merged in at release time only. Runtime resolution searches next to the executable first (where a bundled sidecar lands) then app-data (where `scripts/fetch-whisper.ps1` installs it), so the same code serves both without a build flag.
 
 ### Alignment — `src/speech/align.ts`
 
@@ -537,7 +537,9 @@ src/
 
 ## Code conventions
 
-Enforced, not aspirational: ESLint `jsdoc/require-jsdoc` + `require-param-description` for TypeScript, `#![warn(missing_docs)]` for Rust. CI fails on a missing docstring.
+Enforced, not aspirational: ESLint `jsdoc/require-jsdoc` + `require-param-description` for TypeScript, `#![warn(missing_docs)]` for Rust. A missing docstring fails `npm run lint`.
+
+**There is no CI, and this section said there was for eleven phases.** The rules are real and they do fail the build — but nothing runs them on push, so what enforces them is the five-command gate run by hand before each commit. Recorded rather than quietly corrected, because "enforced, not aspirational" was half true and the half that was false is exactly the half a reader would rely on.
 
 ### Naming
 
@@ -635,7 +637,7 @@ This section originally planned nine `.claude/agents/*.md` definitions. **Phases
 **Three of the nine were solving a problem that structure solves better.**
 
 - `template-fidelity` was going to re-extract the docx and diff it against the data model. Instead the labels are *imported* from the `*_LABELS` records rather than retyped, and `types/__tests__/template-fidelity.test.ts` diffs those records against the real `.docx` on every run. A label cannot drift without failing a test. An agent that checks when you remember to run it is strictly worse than a test that checks when you don't.
-- `doc-comment-auditor` was going to enforce the conventions above on changed files. ESLint does the mechanical half — `jsdoc/require-jsdoc`, `require-param-description`, `check-param-names`, `id-length`, `naming-convention` — and CI fails on it. What is left is the judgement half: a comment that narrates the next line, an argument description that only restates its type. That is review, and it is cheaper as part of reading the diff than as a separate pass over every changed file.
+- `doc-comment-auditor` was going to enforce the conventions above on changed files. ESLint does the mechanical half — `jsdoc/require-jsdoc`, `require-param-description`, `check-param-names`, `id-length`, `naming-convention` — and `npm run lint` fails on it. What is left is the judgement half: a comment that narrates the next line, an argument description that only restates its type. That is review, and it is cheaper as part of reading the diff than as a separate pass over every changed file.
 - `analyzer-rule` was going to write one heuristic at a time against the `Finding` contract. The rules turned out to share far too much to hand out one at a time: a lexicon, a field-kind taxonomy, and a `Finding` shape that all ten pull on. Worse, two of the thresholds could only be set by watching every rule fire on one real case at once — `subOverlap`'s 0.07 and `causalChain`'s connective families were both wrong until the whole set ran against the filled example together. Ten cold agents would have re-derived the taxonomy ten times and calibrated nothing.
 
 What did survive from `analyzer-rule` is its actual content: **every rule ships with a false-positive test.** That is now a convention the tests enforce, not a brief.
@@ -746,4 +748,6 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
       - The run deletes its cases and its team and **asserts the cleanup**, because `rpc` reports a failure in its result rather than throwing and a silent one leaves a team nobody can reach or remove.
 
     **Still open**: two installs. Everything above ran on one machine, so the one unproved clause is physical — a teammate's keystrokes arriving on *another computer's* screen. What separates that from what is proved is now only the hardware: two independent clients, two documents, two sessions and the real policy have all been in one room together over the real wire.
-15. **Conventions hold** — `npm run lint` and `cargo clippy -- -D warnings` both pass with the docstring rules on. Then delete a docstring and a param description and confirm CI actually fails, so the rule isn't quietly disabled.
+15. **Conventions hold** — `npm run lint` and `cargo clippy -- -D warnings` both pass with the docstring rules on. Then delete a docstring and a param description and confirm `npm run lint` actually fails, so the rule isn't quietly disabled.
+
+    **The step as written assumed a CI that does not exist.** There is no `.github/` in this repo and nothing runs on push, so "confirm CI actually fails" was never a check anybody could perform. The rules themselves are real — ESLint and clippy do reject a missing docstring — but the thing standing between a bad commit and the trunk is a human running five commands. Either add the workflow or read this step as what it now says.
