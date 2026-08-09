@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { runAttack, runAudit, runPois } from '../coach/index.ts'
-import { clearCoachKey, readCoachStatus, saveCoachKey } from '../coach/index.ts'
+import { readCoachStatus } from '../coach/index.ts'
 import type { CoachOutcome, CoachStatus, CoachTaskId } from '../coach/index.ts'
 import type { SpeakerRole } from '../formats/index.ts'
 import type { Case } from '../types/case.ts'
@@ -54,10 +54,14 @@ export interface CoachController {
   readonly pois: (caseFile: Case, role: SpeakerRole) => void
   /** Clears the last result so the panel goes back to its buttons. */
   readonly dismiss: () => void
-  /** Saves a key and refreshes the status. Rejects with the credential store's message. */
-  readonly saveKey: (key: string) => Promise<void>
-  /** Deletes the key and refreshes the status. */
-  readonly forgetKey: () => Promise<void>
+  /**
+   * Re-reads whether a key is present.
+   *
+   * The key comes from the environment, which the app cannot change — so this exists for the one
+   * case that matters: somebody sets the variable, then asks the panel to look again without
+   * restarting. A shell variable set after launch will *not* be seen, and the panel says so.
+   */
+  readonly recheck: () => Promise<void>
 }
 
 /** Nothing has been asked for yet. */
@@ -161,21 +165,7 @@ export function useCoach(): CoachController {
     setRun(IDLE)
   }, [])
 
-  const saveKey = useCallback(
-    async (key: string): Promise<void> => {
-      await saveCoachKey(key)
-      await refresh()
-    },
-    [refresh],
-  )
-
-  const forgetKey = useCallback(async (): Promise<void> => {
-    await clearCoachKey()
-    setRun(IDLE)
-    await refresh()
-  }, [refresh])
-
-  return { status, run, audit, attack, pois, dismiss, saveKey, forgetKey }
+  return { status, run, audit, attack, pois, dismiss, recheck: refresh }
 }
 
 /**

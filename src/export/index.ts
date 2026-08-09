@@ -18,6 +18,7 @@ import type { Case } from '../types/case.ts'
 import { buildDbcase, readDbcase, type DbcaseImport } from './dbcase.ts'
 import { buildCaseDocx, buildSpeechSheetDocx } from './docx.ts'
 import { buildSpeechSheet } from './speechSheet.ts'
+import type { ScriptEdits } from '../script/edits.ts'
 
 /** Characters Windows forbids in a file name, plus the ones that make a name awkward to type. */
 const UNSAFE_FILENAME_CHARACTERS = /[<>:"/\\|?*]/g
@@ -116,11 +117,14 @@ export async function saveCaseDbcase(caseFile: Case): Promise<string | null> {
  *
  * @param caseFile - The case to compile.
  * @param role - The seat whose speech to write.
+ * @param edits - Delivery rewrites, so the saved document says what the teleprompter says.
+ *   Omitting them writes the compiled wording.
  * @returns The path written, or null when the dialog was cancelled.
  */
 export async function saveSpeechSheetDocx(
   caseFile: Case,
   role: SpeakerRole,
+  edits: ScriptEdits = {},
 ): Promise<string | null> {
   const path = await save({
     defaultPath: suggestFileName(caseFile, 'docx').replace(/\.docx$/, ` - ${role.shortLabel}.docx`),
@@ -129,7 +133,7 @@ export async function saveSpeechSheetDocx(
   if (path === null) {
     return null
   }
-  const sheet = buildSpeechSheet(caseFile, role)
+  const sheet = buildSpeechSheet(caseFile, role, edits)
   await writeFile(path, buildSpeechSheetDocx(sheet, localDateStamp(new Date())))
   return path
 }

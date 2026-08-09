@@ -11,7 +11,6 @@
  * case unasked.
  */
 
-import { useState } from 'react'
 
 import { AXIS_SCORE_LABELS, DEPTH_AXIS_DESCRIPTIONS, DEPTH_AXIS_LABELS } from '../coach/index.ts'
 import type {
@@ -128,10 +127,12 @@ export function CoachPanel({
 
           <RunView coach={coach} caseFile={caseFile} update={update} />
 
-          <KeyFooter coach={coach} backend={status.backend} persistent={status.persistent} />
+          <p className="text-xs text-neutral-400 dark:text-neutral-500">
+            Key from {status.source}. It is read in the Rust shell and never reaches this window.
+          </p>
         </>
       ) : (
-        <KeyForm coach={coach} storeError={status.error} backend={status.backend} />
+        <KeyMissing coach={coach} envVar={status.envVar} statusError={status.error} />
       )}
     </div>
   )
@@ -370,87 +371,48 @@ function Rejections({ outcome }: { outcome: CoachOutcome }): React.JSX.Element |
   )
 }
 
-/** The empty state: what Layer B adds, and the box for the key that switches it on. */
-function KeyForm({
+/**
+ * The empty state: what Layer B adds, and where to put the key that switches it on.
+ *
+ * No input box. The key is an environment variable read by the Rust shell, so there is nothing
+ * for this window to accept and nowhere for it to put it — which is the point: a webview that
+ * could take a key is a webview that has one.
+ */
+function KeyMissing({
   coach,
-  storeError,
-  backend,
+  envVar,
+  statusError,
 }: {
   coach: CoachController
-  storeError: string | null
-  backend: string
+  envVar: string
+  statusError: string | null
 }): React.JSX.Element {
-  const [draft, setDraft] = useState('')
-  const [failure, setFailure] = useState<string | null>(null)
-
   return (
     <div className="flex flex-col gap-1.5">
       <p className="text-xs leading-snug text-neutral-500 dark:text-neutral-400">
         Off. The depth panel above runs offline and always will; Claude adds the question a judge
         would ask, the attacks the other bench is preparing, and the POIs coming your way.
       </p>
-      <input
-        type="password"
-        className="field-input"
-        placeholder="Anthropic API key"
-        autoComplete="off"
-        spellCheck={false}
-        value={draft}
-        onChange={(event) => {
-          setDraft(event.target.value)
-        }}
-      />
+      <p className="text-xs leading-snug text-neutral-500 dark:text-neutral-400">
+        To switch it on, set <code>{envVar}</code> in your environment — or add a line to the
+        project’s <code>.env</code> — and restart the app.
+      </p>
+      {/* The variable is read at launch, so a shell change made now is invisible until a
+          restart. Saying that beside the button is cheaper than letting somebody press it
+          three times and conclude the feature is broken. */}
       <button
         type="button"
-        className="btn btn-primary self-start"
-        disabled={draft.trim().length === 0}
+        className="btn self-start"
         onClick={() => {
-          coach.saveKey(draft).then(
-            () => {
-              setDraft('')
-              setFailure(null)
-            },
-            (error: unknown) => {
-              setFailure(typeof error === 'string' ? error : 'Could not save the key.')
-            },
-          )
+          void coach.recheck()
         }}
       >
-        Save key
+        Check again
       </button>
       <p className="text-xs text-neutral-400 dark:text-neutral-500">
-        Kept in the {backend}. It never reaches this window again — requests are made from the
-        Rust side.
+        A variable exported after the app started will not be seen until it restarts.
       </p>
-      {failure && <p className="text-xs text-red-700 dark:text-red-400">{failure}</p>}
-      {storeError && <p className="text-xs text-red-700 dark:text-red-400">{storeError}</p>}
+      {statusError && <p className="text-xs text-red-700 dark:text-red-400">{statusError}</p>}
     </div>
-  )
-}
-
-/** Where the key lives, and the way back out. */
-function KeyFooter({
-  coach,
-  backend,
-  persistent,
-}: {
-  coach: CoachController
-  backend: string
-  persistent: boolean
-}): React.JSX.Element {
-  return (
-    <p className="text-xs text-neutral-400 dark:text-neutral-500">
-      Key in the {backend}
-      {!persistent && ' — this build has no persistent store, so it is forgotten on quit'}.{' '}
-      <button
-        type="button"
-        className="underline underline-offset-2"
-        onClick={() => {
-          void coach.forgetKey()
-        }}
-      >
-        Remove
-      </button>
-    </p>
   )
 }

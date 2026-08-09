@@ -19,15 +19,18 @@ import { buildSections, flattenFields } from '../../case/sections.ts'
 import { formatClock } from '../../case/time.ts'
 import { setFieldByPath } from '../../case/update.ts'
 import { useCaseStore } from '../../hooks/useCaseStore.ts'
+import { useScriptEdits } from '../../hooks/useScriptEdits.ts'
 import { useSpeechReview } from '../../hooks/useSpeechReview.ts'
 import { useSpeechSession } from '../../hooks/useSpeechSession.ts'
 import { useSpeechTimer } from '../../hooks/useSpeechTimer.ts'
 import { compileScript } from '../../script/compile.ts'
+import { applyEdits, type ScriptEdits } from '../../script/edits.ts'
 import type { CompiledScript } from '../../script/types.ts'
 import type { SpeechLimits } from '../../speech/timer.ts'
 import { buildSpeechLimits, scriptHeadroom } from '../../speech/timer.ts'
 import type { Case } from '../../types/case.ts'
 import { LiveTranscript } from './LiveTranscript.tsx'
+import { ScriptEditor } from './ScriptEditor.tsx'
 import { SpeechReport } from './SpeechReport.tsx'
 import { SpeechTimer } from './SpeechTimer.tsx'
 import { Teleprompter } from './Teleprompter.tsx'
@@ -58,9 +61,19 @@ export function SpeechView({ caseId, onClose }: SpeechViewProps): React.JSX.Elem
   const format = caseFile ? getFormat(caseFile.format) : null
   const role = caseFile ? getRole(caseFile.format, caseFile.position) : undefined
 
-  const script = useMemo(
+  // The compiled script, before any rewrite. Kept separately because Revert restores to it and
+  // `orphanedEditIds` is asked about it — an edited script has the same segment ids, but the
+  // wording it would revert to would be the rewrite itself.
+  const compiled = useMemo(
     () => (caseFile && role ? compileScript(caseFile, role) : null),
     [caseFile, role],
+  )
+  const scriptEdits = useScriptEdits(caseId)
+  // What actually gets delivered. `applyEdits` returns the same object when nothing is stored,
+  // so an unedited speech pays nothing for this.
+  const script = useMemo(
+    () => (compiled ? applyEdits(compiled, scriptEdits.edits) : null),
+    [compiled, scriptEdits.edits],
   )
 
   // Both memoized because the hooks below depend on their identity: a new array every render
@@ -74,11 +87,16 @@ export function SpeechView({ caseId, onClose }: SpeechViewProps): React.JSX.Elem
     [format, role, isReply],
   )
 
-  return limits && script && caseFile && role ? (
+  return limits && script && compiled && caseFile && role ? (
     <SpeechStage
       caseFile={caseFile}
       role={role}
       script={script}
+      compiled={compiled}
+      edits={scriptEdits.edits}
+      editsError={scriptEdits.error}
+      onWriteEdit={scriptEdits.write}
+      onRevertEdit={scriptEdits.revert}
       scriptWords={scriptWords}
       limits={limits}
       isReply={isReply}
@@ -106,6 +124,11 @@ function SpeechStage({
   caseFile,
   role,
   script,
+  compiled,
+  edits,
+  editsError,
+  onWriteEdit,
+  onRevertEdit,
   scriptWords,
   limits,
   isReply,
@@ -117,6 +140,11 @@ function SpeechStage({
   caseFile: Case
   role: SpeakerRole
   script: CompiledScript
+  compiled: CompiledScript
+  edits: ScriptEdits
+  editsError: string | null
+  onWriteEdit: (segmentId: string, text: string) => void
+  onRevertEdit: (segmentId: string) => void
   scriptWords: readonly string[]
   limits: SpeechLimits
   isReply: boolean
@@ -131,6 +159,11 @@ function SpeechStage({
 
   // False while the report is up, so the speaker can read the script back without losing it.
   const [isShowingScript, setIsShowingScript] = useState(true)
+  // Editing is a mode rather than an inline affordance: the teleprompter's rendered text has to
+  // stay character-identical to `segment.text`, which is what proves the token offsets the
+  // aligner indexes into, and a textarea in the middle of that is a caret and a scroll position
+  // inside the one thing on this screen that must stay exact.
+  const [isEditingScript, setIsEditingScript] = useState(false)
 
   const isLive = session.status === 'recording' || session.status === 'stopping'
   const headroom = scriptHeadroom(script.estimatedSeconds, limits)
@@ -237,6 +270,15 @@ function SpeechStage({
             error={review.error}
             onSaveToField={saveToField}
           />
+        ) : isEditingScript ? (
+          <ScriptEditor
+            compiled={compiled}
+            delivered={script}
+            edits={edits}
+            onWrite={onWriteEdit}
+            onRevert={onRevertEdit}
+            error={editsError}
+          />
         ) : (
           <Teleprompter script={script} alignment={session.alignment} isLive={isLive} />
         )}
@@ -246,6 +288,18 @@ function SpeechStage({
         <div className="flex gap-1.5">
           <button type="button" className="btn" onClick={onClose} disabled={isLive}>
             ← Prep
+          </button>
+          {/* Disabled while recording: rewriting the script the aligner is currently indexing
+              into would renumber every token underneath it mid-speech. */}
+          <button
+            type="button"
+            className="btn"
+            disabled={isLive}
+            onClick={() => {
+              setIsEditingScript((current) => !current)
+            }}
+          >
+            {isEditingScript ? 'Done' : 'Edit script'}
           </button>
           <button
             type="button"

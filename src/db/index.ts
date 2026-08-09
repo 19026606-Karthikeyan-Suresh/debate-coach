@@ -484,3 +484,59 @@ export async function replaceRemoteComments(
     await saveComment({ ...comment, isRemote: true }, false)
   }
 }
+
+// ---------------------------------------------------------------------------
+// Delivery rewrites
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads every rewrite stored for one case.
+ *
+ * @param caseId - The case whose script is being delivered.
+ * @returns Segment id to replacement text. Empty is the ordinary state — most speeches are
+ *   delivered as compiled. An empty *string* against a live id is a real edit meaning "do not
+ *   say this segment", which is why the record holds it rather than pruning it.
+ */
+export async function loadScriptEdits(caseId: string): Promise<Record<string, string>> {
+  const database = await getDatabase()
+  const rows = await database.select<{ segment_id: string; text: string }[]>(
+    'SELECT segment_id, text FROM script_edits WHERE case_id = $1',
+    [caseId],
+  )
+  return Object.fromEntries(rows.map((row) => [row.segment_id, row.text]))
+}
+
+/**
+ * Stores one rewrite.
+ *
+ * @param caseId - The case being delivered.
+ * @param segmentId - From `ScriptSegment.id`. Derived from case ids, so it survives a recompile.
+ * @param text - The new wording. `''` is stored, not treated as a delete — see
+ *   {@link loadScriptEdits}. Use {@link deleteScriptEdit} to restore the compiled text.
+ */
+export async function saveScriptEdit(
+  caseId: string,
+  segmentId: string,
+  text: string,
+): Promise<void> {
+  const database = await getDatabase()
+  await database.execute(
+    `INSERT INTO script_edits (case_id, segment_id, text, updated_at) VALUES ($1, $2, $3, $4)
+     ON CONFLICT(case_id, segment_id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at`,
+    [caseId, segmentId, text, new Date().toISOString()],
+  )
+}
+
+/**
+ * Drops one rewrite, restoring the compiled wording.
+ *
+ * @param caseId - The case being delivered.
+ * @param segmentId - Segment to revert. An id with no stored edit is a no-op.
+ */
+export async function deleteScriptEdit(caseId: string, segmentId: string): Promise<void> {
+  const database = await getDatabase()
+  await database.execute('DELETE FROM script_edits WHERE case_id = $1 AND segment_id = $2', [
+    caseId,
+    segmentId,
+  ])
+}

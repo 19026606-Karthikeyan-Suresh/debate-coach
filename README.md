@@ -45,6 +45,9 @@ compiler landed before any speech UI. The reference case compiles to a 1060-word
 - **Speech Trainer** — whisper.cpp transcribes live, a streaming Needleman–Wunsch aligner marks
   each script word spoken / skipped / pending, and the teleprompter follows your actual position.
   Format-aware timer with the POI window shaded and knocks at 1:00 and 6:00.
+- **Script editing** — the compiled speech is editable line by line, and rewrites are stored
+  apart from the case so editing a field in Prep recompiles everything around them and leaves
+  them alone. A line can also be dropped from delivery outright.
 - **Report and history** — skipped words grouped into runs that never cross a field, each named by
   the template row it came from; pace, fillers, pauses over 2 s, time per section. Charted across
   sessions.
@@ -84,7 +87,7 @@ never a dependency.
 | Crate | Instead of | Why |
 |---|---|---|
 | `reqwest` + `native-tls` | rustls / aws-lc-rs | The default TLS stack needs cmake and NASM on Windows. `native-tls` is schannel here — no C toolchain between a teammate and a build. |
-| `keyring` (`windows-native`) | `tauri-plugin-stronghold` | Stronghold needs a password to unlock a file, so it is a second password every launch or a hardcoded one. Windows already unlocks a per-user secret store at login. |
+| `keyring` (`windows-native`) | `tauri-plugin-stronghold` | Holds the **Supabase session** (the Anthropic key moved to an env var). Stronghold needs a password to unlock a file, so it is a second password every launch or a hardcoded one. Windows already unlocks a per-user secret store at login. |
 | `opus-rs` | `audiopus_sys` / any binding | Every binding crate builds libopus and wants cmake. This is a pure-Rust port — cargo alone. |
 | `std::net` | `y-webrtc` | WebRTC needs signalling that already exists; `y-webrtc` defaults to servers on the internet, which a room with no internet does not have. The LAN fallback is a relay in the shell. |
 
@@ -194,10 +197,24 @@ is decided by the RLS policies. See [`supabase/README.md`](supabase/README.md).
 
 ### Claude coaching
 
-Open a case, find the coach panel in the right rail, and paste an Anthropic API key. It is stored
-by `keyring` in the Windows Credential Manager under `com.kartixc.debatecoach` /
-`anthropic-api-key`, never written to a file, never returned to the webview. Press Remove — or
-delete the credential — to revoke it.
+Set `ANTHROPIC_API_KEY` and restart the app:
+
+```bash
+setx ANTHROPIC_API_KEY "sk-ant-..."
+```
+
+Or, for a dev run, add it to `.env` — there is a commented slot in `.env.example`. A real
+environment variable is the better of the two: `.env` is plaintext on disk, and in this project's
+case inside a OneDrive-synced folder.
+
+**Never name it `VITE_ANTHROPIC_API_KEY`.** Vite inlines anything prefixed `VITE_` into the
+frontend bundle at build time, which would write the key into the webview's JavaScript and ship
+it inside the installer. Without the prefix it is invisible to Vite and is read only by the Rust
+shell, which is what makes the request. There is no command that accepts a key and none that
+returns one, so it never reaches the webview at all.
+
+The variable is read at launch, so a change needs the app restarting — the panel says so rather
+than leaving you pressing a button that cannot work.
 
 ---
 
@@ -236,6 +253,7 @@ src/
   coach/        Layer B — prompts, JSON schemas, the Socratic guard (pure)
   script/       the compiler: a filled case -> deliverable speech text
   speech/       aligner, normaliser, timer, metrics, report (all pure)
+  script/edits  per-segment delivery rewrites, laid over the compiled script (pure)
   collab/       the Yjs document, room protocol, presence (pure + one Y.Doc)
   sync/         Supabase client, dirty-row queue, library, the two co-prep wires
   export/       ZIP writer, OOXML, .docx / .dbcase / speech sheet (pure)

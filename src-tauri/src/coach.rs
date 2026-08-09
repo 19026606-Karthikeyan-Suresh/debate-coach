@@ -14,14 +14,21 @@
 //! not read as content — are the same for all three tasks, so they are constants here rather than
 //! three copies in the caller.
 //!
-//! # Why the key is in the credential manager rather than a file
+//! # The key comes from the environment, and never from `VITE_`
 //!
-//! PLAN said `tauri-plugin-stronghold`. Stronghold is an encrypted snapshot file that needs a
-//! password to unlock, which means either prompting for a second password every launch or
-//! hardcoding one — and a hardcoded password over an encrypted file is a file. Windows already
-//! has a per-user secret store the OS unlocks at login, so the key goes there. `keyring` is the
-//! crate; on Windows it is the Credential Manager, and [`coach_status`] reports which backend it
-//! actually got so a build on a platform without one cannot quietly pretend the key was saved.
+//! `ANTHROPIC_API_KEY` is read here, in the shell process. It is deliberately **not** a `VITE_`
+//! variable: Vite inlines anything so prefixed into the frontend bundle at build time, which
+//! would write the key into the webview's JavaScript and ship it inside the installer — the exact
+//! opposite of the property this module exists to hold. A non-prefixed variable is invisible to
+//! Vite and reaches only the Rust side.
+//!
+//! Earlier builds took the key from a settings box and kept it in the Windows Credential Manager.
+//! That is a stronger place to keep a secret than a file, and it is worth knowing what moving to
+//! an environment variable gave up: the credential store is encrypted at rest per user, while a
+//! `.env` is plaintext on disk — and in this project's case, inside a OneDrive-synced folder. The
+//! real environment variable is the better of the two; the `.env` fallback exists because a dev
+//! run is otherwise a chore. [`coach_status`] reports which one supplied the key so the panel can
+//! say so rather than leaving it a guess.
 //!
 //! # Failure is a first-class state
 //!
@@ -34,12 +41,17 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// Credential-manager service name. Matches the bundle identifier so the entry is findable in
-/// the Windows Credential Manager UI by someone who wants to delete it by hand.
-const KEYRING_SERVICE: &str = "com.kartixc.debatecoach";
+/// Environment variable the key is read from.
+///
+/// No `VITE_` prefix, and that is load-bearing rather than stylistic — see the module docs.
+const KEY_ENV: &str = "ANTHROPIC_API_KEY";
 
-/// Credential-manager account name. One key per install; a second profile would need a second.
-const KEYRING_ACCOUNT: &str = "anthropic-api-key";
+/// Where a dev run looks for a `.env`, relative to the process's working directory.
+///
+/// `npm run tauri dev` runs the binary from `src-tauri/`, so the project file is one level up;
+/// a bundled build is launched from wherever the user launched it. Both are tried, nearest
+/// first, and neither existing is the ordinary state of a build with no key.
+const ENV_FILES: [&str; 2] = [".env", "../.env"];
 
 /// The Messages endpoint. Nothing else in the app makes an outbound request.
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -82,10 +94,8 @@ pub const CREDENTIAL_STORE: &str = "in-memory store (forgotten on quit)";
 /// the prep on Layer A.
 #[derive(Debug)]
 pub enum CoachError {
-    /// No key saved. The normal state, not a failure — Layer B is opt-in.
+    /// No key in the environment. The normal state, not a failure — Layer B is opt-in.
     NoKey,
-    /// The credential store itself refused. Carries its message, which is usually specific.
-    Keyring(String),
     /// The request never reached Anthropic: no route, DNS, TLS, or timeout.
     Network(String),
     /// 401. The key is wrong, revoked, or from a different organisation.
@@ -111,12 +121,15 @@ pub enum CoachError {
 impl std::fmt::Display for CoachError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoKey => write!(formatter, "no Anthropic API key is saved"),
-            Self::Keyring(message) => write!(formatter, "credential store failed: {message}"),
+            Self::NoKey => write!(
+                formatter,
+                "no Anthropic API key. Set {KEY_ENV} in the environment or in the project .env."
+            ),
             Self::Network(message) => write!(formatter, "could not reach Anthropic: {message}"),
-            Self::Unauthorized => {
-                write!(formatter, "Anthropic rejected the saved key. Replace it and try again.")
-            }
+            Self::Unauthorized => write!(
+                formatter,
+                "Anthropic rejected the key in {KEY_ENV}. Replace it and restart the app."
+            ),
             Self::RateLimited(Some(seconds)) => {
                 write!(formatter, "rate limited by Anthropic. Retry in {seconds}s.")
             }
@@ -138,18 +151,19 @@ impl std::error::Error for CoachError {}
 
 /// Whether Layer B can run, and where the key is kept.
 ///
-/// `persistent` is not decoration: on a build whose credential backend is the in-memory fallback,
-/// a saved key survives until quit and no longer, and the settings box says so instead of letting
-/// the debater discover it before a round.
+/// `source` is not decoration. A key set in the shell and a key sitting in a `.env` behave
+/// differently — the first needs the app restarting after a change, the second is read at launch
+/// from a plaintext file — and a panel that said only "coaching on" would leave somebody
+/// wondering which of the two is in play when a rotated key stops working.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoachStatus {
     /// True when a key is readable right now.
     pub has_key: bool,
-    /// Human name of the credential store, for the settings box.
-    pub backend: &'static str,
-    /// False when the store does not outlive the process.
-    pub persistent: bool,
+    /// Where it came from, for the panel. Empty when there is none.
+    pub source: &'static str,
+    /// The variable to set, so the UI never has to hardcode the name a second time.
+    pub env_var: &'static str,
     /// The model every request uses, so the UI never has to hardcode it a second time.
     pub model: &'static str,
     /// Why the key could not be read, when the reason is something other than "there is none".
@@ -189,28 +203,62 @@ pub struct CoachReply {
     pub output_tokens: u64,
 }
 
-/// Opens the credential-store entry for the API key.
+/// Pulls one variable out of `.env`-style text.
 ///
-/// # Errors
-/// [`CoachError::Keyring`] when the platform store cannot be addressed at all, which is a
-/// different failure from the entry being absent.
-fn entry() -> Result<keyring::Entry, CoachError> {
-    keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(|error| CoachError::Keyring(error.to_string()))
+/// Deliberately small: `KEY=value` lines, `#` comments, blank lines, and optional surrounding
+/// quotes. No interpolation and no `export` prefix, because this reads one key out of one file
+/// that this project also hands to Vite — anything cleverer would be a second dotenv dialect to
+/// keep in step with the first.
+fn value_from_env_text(text: &str, wanted: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if name.trim() != wanted {
+            continue;
+        }
+        let value = value.trim().trim_matches(['"', '\'']).trim();
+        if !value.is_empty() {
+            return Some(value.to_owned());
+        }
+    }
+    None
 }
 
-/// Reads the saved key.
+/// The key, and where it came from.
+///
+/// The real environment wins over the file: an exported variable is the deliberate choice and a
+/// stale `.env` left in the working tree must not silently override it.
 ///
 /// # Errors
-/// [`CoachError::Keyring`] when the store errors. A *missing* entry is `Ok(None)` — not having a
-/// key is the default state of the app, and treating it as an error would put a red message in
-/// front of every debater who never opted in.
-fn read_key() -> Result<Option<String>, CoachError> {
-    match entry()?.get_password() {
-        Ok(key) => Ok(Some(key)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(CoachError::Keyring(error.to_string())),
+/// Never. A missing key is `None` rather than an error — not having one is the default state of
+/// the app, and treating it as a failure would put a red message in front of every debater who
+/// never opted in. The signature keeps its `Result` so the call site in [`run_coach_request`]
+/// reads the same as it did.
+fn read_key() -> Result<Option<(String, &'static str)>, CoachError> {
+    if let Ok(key) = std::env::var(KEY_ENV) {
+        let trimmed = key.trim();
+        // A key pasted into a shell profile arrives with whitespace often enough to matter: a
+        // stray newline in an HTTP header is a 401 nobody can explain.
+        if !trimmed.is_empty() {
+            return Ok(Some((trimmed.to_owned(), "the environment")));
+        }
     }
+
+    for candidate in ENV_FILES {
+        let Ok(text) = std::fs::read_to_string(candidate) else {
+            continue;
+        };
+        if let Some(value) = value_from_env_text(&text, KEY_ENV) {
+            return Ok(Some((value, "the project .env file")));
+        }
+    }
+
+    Ok(None)
 }
 
 /// Reports whether Layer B is usable.
@@ -219,54 +267,18 @@ fn read_key() -> Result<Option<String>, CoachError> {
 /// `error`, because the Prep screen has to render regardless.
 #[tauri::command]
 pub fn coach_status() -> CoachStatus {
-    let (has_key, error) = match read_key() {
-        Ok(key) => (key.is_some(), None),
-        Err(problem) => (false, Some(problem.to_string())),
+    let (has_key, source, error) = match read_key() {
+        Ok(Some((_, source))) => (true, source, None),
+        Ok(None) => (false, "", None),
+        Err(problem) => (false, "", Some(problem.to_string())),
     };
 
     CoachStatus {
         has_key,
-        backend: CREDENTIAL_STORE,
-        persistent: cfg!(windows),
+        source,
+        env_var: KEY_ENV,
         model: MODEL,
         error,
-    }
-}
-
-/// Saves an API key to the credential store.
-///
-/// * `key` — the key. Trimmed, because a value pasted out of a browser usually arrives with a
-///   newline on it and a stray newline in an HTTP header is a 401 nobody can explain. An empty
-///   or whitespace-only key is refused rather than saved, since saving it would flip the UI to
-///   "coaching on" and then fail on the first call.
-///
-/// # Errors
-/// A message when the value is blank or the credential store refuses the write.
-#[tauri::command]
-pub fn save_coach_key(key: String) -> Result<(), String> {
-    let trimmed = key.trim();
-    if trimmed.is_empty() {
-        return Err("an API key is required".to_owned());
-    }
-    entry()
-        .and_then(|slot| {
-            slot.set_password(trimmed).map_err(|error| CoachError::Keyring(error.to_string()))
-        })
-        .map_err(|error| error.to_string())
-}
-
-/// Deletes the saved key.
-///
-/// Deleting when there is nothing saved succeeds — the caller's intent is "there should be no key
-/// here", and that is already true.
-///
-/// # Errors
-/// A message when the credential store refuses the delete.
-#[tauri::command]
-pub fn clear_coach_key() -> Result<(), String> {
-    match entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(CoachError::Keyring(error.to_string()).to_string()),
     }
 }
 
@@ -436,7 +448,7 @@ fn parse_reply(payload: &Value) -> Result<CoachReply, CoachError> {
 /// missing key, bad key, rate limit, refusal, no network — and the message names which.
 #[tauri::command]
 pub async fn run_coach_request(request: CoachRequest) -> Result<CoachReply, String> {
-    let key = read_key()?.ok_or(CoachError::NoKey)?;
+    let (key, _source) = read_key()?.ok_or(CoachError::NoKey)?;
 
     // Built per call rather than pooled. A coaching call happens when someone presses a button,
     // three times in a prep at most, so a reused connection would save a handshake nobody
@@ -562,5 +574,56 @@ mod tests {
     fn the_fallback_retry_only_fires_on_a_fallback_complaint() {
         assert!(mentions_fallback("fallbacks: unsupported beta"));
         assert!(!mentions_fallback("max_tokens: must be greater than 0"));
+    }
+
+    #[test]
+    fn the_env_parser_finds_a_key_among_the_supabase_ones() {
+        // The real file this reads is the one Vite also reads, so it has other keys in it and
+        // comments above them.
+        let text = "# Copy to `.env` to turn the team layer on.
+VITE_SUPABASE_URL=https://example.supabase.co
+VITE_SUPABASE_ANON_KEY=public-anon-key
+
+# The one real secret. No VITE_ prefix: that would inline it into the bundle.
+ANTHROPIC_API_KEY=sk-ant-example
+";
+        assert_eq!(
+            value_from_env_text(text, KEY_ENV).as_deref(),
+            Some("sk-ant-example")
+        );
+    }
+
+    #[test]
+    fn the_env_parser_strips_quotes_and_ignores_comments() {
+        assert_eq!(
+            value_from_env_text("ANTHROPIC_API_KEY=\"sk-quoted\"", KEY_ENV).as_deref(),
+            Some("sk-quoted")
+        );
+        assert_eq!(
+            value_from_env_text("ANTHROPIC_API_KEY='sk-single'", KEY_ENV).as_deref(),
+            Some("sk-single")
+        );
+        // A commented-out key is not a key. Leaving one in a file while wondering why coaching is
+        // off is the likeliest way to use this wrong.
+        assert_eq!(value_from_env_text("#ANTHROPIC_API_KEY=sk-off", KEY_ENV), None);
+    }
+
+    #[test]
+    fn the_env_parser_treats_an_empty_value_as_absent() {
+        // `.env.example` ships the name with nothing after it. Reading that as a key would flip
+        // the panel to "coaching on" and then fail on the first call with a 401.
+        assert_eq!(value_from_env_text("ANTHROPIC_API_KEY=", KEY_ENV), None);
+        assert_eq!(value_from_env_text("ANTHROPIC_API_KEY=   ", KEY_ENV), None);
+        assert_eq!(value_from_env_text("OTHER=value", KEY_ENV), None);
+    }
+
+    #[test]
+    fn a_vite_prefixed_name_is_not_the_key() {
+        // The whole point of the naming rule: if somebody adds the VITE_ form, it must not work,
+        // because a variable that works there is a variable inlined into the webview bundle.
+        assert_eq!(
+            value_from_env_text("VITE_ANTHROPIC_API_KEY=sk-wrong", KEY_ENV),
+            None
+        );
     }
 }

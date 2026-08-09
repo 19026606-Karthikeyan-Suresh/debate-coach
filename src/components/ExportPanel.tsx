@@ -10,6 +10,7 @@ import { useCallback, useState } from 'react'
 import type { SpeakerRole } from '../formats/index.ts'
 import { saveCaseDbcase, saveCaseDocx, saveSpeechSheetDocx } from '../export/index.ts'
 import { buildSpeechSheet, type SpeechSheet } from '../export/speechSheet.ts'
+import { useScriptEdits } from '../hooks/useScriptEdits.ts'
 import type { Case } from '../types/case.ts'
 import { SpeechSheetView } from './SpeechSheetView.tsx'
 
@@ -49,6 +50,9 @@ export function ExportPanel({ caseFile, role }: ExportPanelProps): React.JSX.Ele
   const [isBusy, setIsBusy] = useState(false)
   // A snapshot taken when the sheet opens. Non-null is what shows the overlay.
   const [sheet, setSheet] = useState<SpeechSheet | null>(null)
+  // The sheet is the teleprompter's backup, so it has to say the same words — including any line
+  // the debater rewrote on the Speak screen.
+  const scriptEdits = useScriptEdits(caseFile.id)
 
   const runExport = useCallback(
     async (save: () => Promise<string | null>): Promise<void> => {
@@ -102,7 +106,7 @@ export function ExportPanel({ caseFile, role }: ExportPanelProps): React.JSX.Ele
           disabled={isBusy || !role}
           onClick={() => {
             if (role) {
-              setSheet(buildSpeechSheet(caseFile, role))
+              setSheet(buildSpeechSheet(caseFile, role, scriptEdits.edits))
             }
           }}
         >
@@ -127,7 +131,7 @@ export function ExportPanel({ caseFile, role }: ExportPanelProps): React.JSX.Ele
             setSheet(null)
           }}
           onSaveDocx={() => {
-            void runExport(() => saveSpeechSheetDocx(caseFile, role))
+            void runExport(() => saveSpeechSheetDocx(caseFile, role, scriptEdits.edits))
           }}
         />
       )}

@@ -10,14 +10,16 @@
  * renders it and the `.docx` writer that saves it both take a {@link SpeechSheet} and add
  * nothing to it.
  *
- * **Delivery edits are not applied.** `script/edits.ts` exists and nothing writes to it yet, so
- * there is no stored edit to lay over — wiring it in here before there is a UI to produce one
- * would be a code path with no way to reach it.
+ * **Delivery edits are applied.** The sheet is the backup for the teleprompter, so the two
+ * saying different things is the one failure it cannot have — somebody reads the paper because
+ * the laptop died, and a line they rewrote is not on it. Passing no edits gives the compiled
+ * script, which is what every caller did before the editor existed.
  */
 
 import { getFormat } from '../formats/index.ts'
 import type { SpeakerRole } from '../formats/index.ts'
 import { compileScript } from '../script/compile.ts'
+import { applyEdits, type ScriptEdits } from '../script/edits.ts'
 import type { ScriptGap } from '../script/types.ts'
 import type { Case } from '../types/case.ts'
 
@@ -64,11 +66,17 @@ export interface SpeechSheet {
  *   the point.
  * @param role - The seat. Drives which blocks compile and in what order; passing another seat's
  *   role produces a sheet made of somebody else's material.
+ * @param edits - Stored rewrites by segment id. Omit for the compiled wording. An edit whose
+ *   text is empty drops that line from the sheet, exactly as it drops it from delivery.
  * @returns The sheet, ready to render or write to a `.docx`.
  */
-export function buildSpeechSheet(caseFile: Case, role: SpeakerRole): SpeechSheet {
+export function buildSpeechSheet(
+  caseFile: Case,
+  role: SpeakerRole,
+  edits: ScriptEdits = {},
+): SpeechSheet {
   const format = getFormat(caseFile.format)
-  const script = compileScript(caseFile, role)
+  const script = applyEdits(compileScript(caseFile, role), edits)
 
   const sections: SpeechSheetSection[] = []
   for (const segment of script.segments) {

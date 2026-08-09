@@ -50,8 +50,6 @@ pub fn run() {
             opus::read_recording_bytes,
             opus::delete_recording,
             coach::coach_status,
-            coach::save_coach_key,
-            coach::clear_coach_key,
             coach::run_coach_request,
             export::write_export_file,
             export::read_case_file,

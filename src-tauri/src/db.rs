@@ -42,6 +42,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: RECORDINGS_AND_COMMENTS,
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 5,
+            description: "per-segment delivery rewrites, kept apart from the case",
+            sql: SCRIPT_EDITS,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -217,4 +223,27 @@ ALTER TABLE sessions ADD COLUMN recording_object_path TEXT;
 
 ALTER TABLE comments ADD COLUMN author_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE comments ADD COLUMN is_remote INTEGER NOT NULL DEFAULT 0;
+"#;
+
+// Delivery rewrites, one row per edited segment.
+//
+// A table rather than a JSON blob on the case, for the reason `script/edits.ts` gives: a compiled
+// script is *derived* and is rebuilt from the case on every keystroke, so anything written into
+// the case would be gone by the next debounce. These are the debater's own words and outlive
+// every recompile, because segment ids are built from case ids rather than from a running count.
+//
+// A row per segment rather than one blob per case, so rewriting one line does not rewrite the
+// speech — and so an orphaned edit can be deleted on its own when the substantive it belonged to
+// goes. `ON DELETE CASCADE` because a deleted case has no segments left to edit.
+//
+// Empty `text` is meaningful and must not be confused with an absent row: it is the debater
+// saying "do not deliver this segment at all".
+const SCRIPT_EDITS: &str = r#"
+CREATE TABLE IF NOT EXISTS script_edits (
+    case_id     TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+    segment_id  TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (case_id, segment_id)
+);
 "#;

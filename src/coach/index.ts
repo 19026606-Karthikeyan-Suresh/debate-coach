@@ -85,7 +85,7 @@ export async function runPois(caseFile: Case, role: SpeakerRole): Promise<CoachO
   return await run(buildPoiPrompt(caseFile, role))
 }
 
-export { clearCoachKey, readCoachStatus, saveCoachKey } from './client.ts'
+export { readCoachStatus } from './client.ts'
 export type { CoachStatus } from './client.ts'
 export { AXIS_SCORE_LABELS, DEPTH_AXES, DEPTH_AXIS_DESCRIPTIONS, DEPTH_AXIS_LABELS } from './types.ts'
 export type {

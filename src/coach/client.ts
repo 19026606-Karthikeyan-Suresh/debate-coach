@@ -1,13 +1,17 @@
 /**
  * The frontend half of the proxy.
  *
- * Four commands, and the key crosses none of them in the direction that would matter: it goes in
- * on `save_coach_key` and never comes back out. Nothing in the webview can read it, which is the
- * whole reason the Anthropic call is made from Rust at all.
+ * Two commands, and the key crosses neither. It is read from `ANTHROPIC_API_KEY` in the shell
+ * process and never leaves it — there is no command that accepts one and none that returns one,
+ * which is the whole reason the Anthropic call is made from Rust at all.
+ *
+ * That is also why the variable has no `VITE_` prefix. Vite inlines anything so prefixed into the
+ * frontend bundle, which would put the key in this file's neighbourhood and ship it inside the
+ * installer.
  *
  * Every function here degrades rather than throws when Tauri is absent. `npm run dev` in a plain
  * browser has no `invoke`, and the Prep screen still has to render — the coach panel just says it
- * is unavailable, exactly as it would on a machine whose credential store is broken.
+ * is unavailable.
  */
 
 import { invoke } from '@tauri-apps/api/core'
@@ -17,10 +21,10 @@ import type { CoachPrompt } from './types.ts'
 /** Whether Layer B can run, as `src-tauri/src/coach.rs` reports it. */
 export interface CoachStatus {
   readonly hasKey: boolean
-  /** Human name of the credential store the key lives in. */
-  readonly backend: string
-  /** False when that store does not survive a quit — the settings box says so. */
-  readonly persistent: boolean
+  /** Where the key came from — the environment, or the project `.env`. Empty when there is none. */
+  readonly source: string
+  /** The variable to set. Read from Rust so the name is not hardcoded in two places. */
+  readonly envVar: string
   /** The model every request uses. Read from Rust so it is not hardcoded twice. */
   readonly model: string
   /** Why the key could not be read, when the reason is not simply that there is none. */
@@ -39,18 +43,18 @@ export interface CoachReply {
 /** What the panel shows when there is no Tauri underneath it. */
 const UNAVAILABLE: CoachStatus = {
   hasKey: false,
-  backend: 'unavailable',
-  persistent: false,
+  source: '',
+  envVar: 'ANTHROPIC_API_KEY',
   model: '',
-  error: 'The desktop shell is not running, so there is nowhere to keep a key.',
+  error: 'The desktop shell is not running, so no key can be read.',
 }
 
 /**
- * Reads whether a key is saved and where it lives.
+ * Reads whether a key is present and where it came from.
  *
- * @returns The status. Never rejects: a broken credential store or a missing shell both come
- *   back as `hasKey: false` with the reason in `error`, because the panel has to render either
- *   way and an unhandled rejection in the right rail would take the Prep screen with it.
+ * @returns The status. Never rejects: a missing shell comes back as `hasKey: false` with the
+ *   reason in `error`, because the panel has to render either way and an unhandled rejection in
+ *   the right rail would take the Prep screen with it.
  */
 export async function readCoachStatus(): Promise<CoachStatus> {
   try {
@@ -58,25 +62,6 @@ export async function readCoachStatus(): Promise<CoachStatus> {
   } catch (error) {
     return { ...UNAVAILABLE, error: describe(error) }
   }
-}
-
-/**
- * Saves an API key.
- *
- * @param key - The key. Trimmed on the Rust side, and refused there if it is blank.
- * @throws If the credential store refuses the write, with the store's own message.
- */
-export async function saveCoachKey(key: string): Promise<void> {
-  await invoke('save_coach_key', { key })
-}
-
-/**
- * Deletes the saved key, turning Layer B back off.
- *
- * @throws If the credential store refuses the delete. Deleting nothing succeeds.
- */
-export async function clearCoachKey(): Promise<void> {
-  await invoke('clear_coach_key')
 }
 
 /**
