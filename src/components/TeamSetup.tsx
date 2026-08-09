@@ -65,6 +65,8 @@ export function TeamSetup({ sync }: TeamSetupProps): React.JSX.Element {
   // A code returned by create or rotate. Held here because it is shown once and cannot be read
   // back — no client is granted the column it was hashed into.
   const [issuedCode, setIssuedCode] = useState<string | null>(null)
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false)
+  const [deleteNotice, setDeleteNotice] = useState<string | null>(null)
 
   const activeTeam = sync.teams.find((team) => team.teamId === sync.activeTeamId) ?? null
 
@@ -234,16 +236,74 @@ export function TeamSetup({ sync }: TeamSetupProps): React.JSX.Element {
       )}
 
       {activeTeam && (
-        <button
-          type="button"
-          className="btn btn-danger self-start"
-          disabled={sync.isBusy}
-          onClick={() => {
-            void sync.leaveTeam(activeTeam.teamId)
-          }}
-        >
-          Leave {activeTeam.name}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="btn btn-danger"
+            disabled={sync.isBusy}
+            onClick={() => {
+              void sync.leaveTeam(activeTeam.teamId)
+            }}
+          >
+            Leave {activeTeam.name}
+          </button>
+
+          {/* Two steps rather than a `confirm()` dialog: this is irreversible for everyone in the
+              squad, not just for the person clicking, and a native dialog in a webview is one
+              reflexive Enter away from gone. */}
+          {activeTeam.role === 'admin' &&
+            (isConfirmingDelete ? (
+              <>
+                <span className="text-sm text-red-700 dark:text-red-400">
+                  Delete {activeTeam.name} for everyone? Cases and speeches stay with whoever wrote
+                  them, and any you shared go back to private.
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  disabled={sync.isBusy}
+                  onClick={() => {
+                    void sync.deleteTeam(activeTeam.teamId).then((detached) => {
+                      setIsConfirmingDelete(false)
+                      if (detached !== null) {
+                        setDeleteNotice(
+                          detached === 0
+                            ? 'Team deleted.'
+                            : `Team deleted. ${String(detached)} of your cases are private again.`,
+                        )
+                      }
+                    })
+                  }}
+                >
+                  Yes, delete it
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    setIsConfirmingDelete(false)
+                  }}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={sync.isBusy}
+                onClick={() => {
+                  setIsConfirmingDelete(true)
+                }}
+              >
+                Delete team
+              </button>
+            ))}
+        </div>
+      )}
+
+      {deleteNotice !== null && (
+        <p className="text-sm text-neutral-600 dark:text-neutral-300">{deleteNotice}</p>
       )}
 
       {sync.error !== null && (

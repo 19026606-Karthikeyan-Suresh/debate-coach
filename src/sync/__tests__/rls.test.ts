@@ -460,6 +460,207 @@ describe('recordings in storage', () => {
   })
 })
 
+describe('deleting a team', () => {
+  /** A throwaway team with one admin, one member, a shared case and a session. */
+  async function buildDoomedTeam(): Promise<{ teamId: string; caseId: string }> {
+    await harness.asUser(CAROL)
+    const created = await harness.query<{ team_id: string; invite_code: string }>(
+      'select * from public.create_team($1, $2)',
+      ['Doomed', 'Carol'],
+    )
+    const teamId = created[0]?.team_id ?? ''
+
+    await harness.asUser(BOB)
+    await harness.query('select public.join_team($1, $2)', [created[0]?.invite_code, 'Bob'])
+
+    await harness.asUser(CAROL)
+    const caseId = `dddddddd-0000-4000-8000-${Math.random().toString(16).slice(2, 14)}`
+    await insertCase(caseId, teamId, CAROL, 'THW disband', 'team')
+    await harness.query(
+      'insert into public.motions (team_id, created_by, text) values ($1, $2, $3)',
+      [teamId, CAROL, 'THW disband'],
+    )
+    return { teamId, caseId }
+  }
+
+  it('is refused to a member who is not an admin', async () => {
+    const { teamId } = await buildDoomedTeam()
+    await harness.asUser(BOB)
+    const message = await errorFrom(() => harness.query('select public.delete_team($1)', [teamId]))
+    expect(message).toContain('only an admin')
+
+    await harness.asUser(CAROL)
+    await harness.query('select public.delete_team($1)', [teamId])
+  })
+
+  it('is refused to somebody outside the team', async () => {
+    const { teamId } = await buildDoomedTeam()
+    await harness.asUser(ALICE)
+    const message = await errorFrom(() => harness.query('select public.delete_team($1)', [teamId]))
+    expect(message).toContain('only an admin')
+
+    await harness.asUser(CAROL)
+    await harness.query('select public.delete_team($1)', [teamId])
+  })
+
+  it('removes the team, its members and its motions', async () => {
+    const { teamId } = await buildDoomedTeam()
+    await harness.asUser(CAROL)
+    await harness.query('select public.delete_team($1)', [teamId])
+
+    await harness.asPostgres()
+    // As the superuser, so this is "the row is gone" rather than "the policy hides it".
+    expect(await harness.query('select id from public.teams where id = $1', [teamId])).toEqual([])
+    expect(
+      await harness.query('select user_id from public.team_members where team_id = $1', [teamId]),
+    ).toEqual([])
+    expect(await harness.query('select id from public.motions where team_id = $1', [teamId])).toEqual(
+      [],
+    )
+  })
+
+  it('keeps the cases and hands them back to their owner', async () => {
+    const { teamId, caseId } = await buildDoomedTeam()
+    await harness.asUser(CAROL)
+    const detached = await harness.query<{ delete_team: number }>(
+      'select public.delete_team($1)',
+      [teamId],
+    )
+    // The count is what the UI tells the admin: this many cases just stopped being shared.
+    expect(detached[0]?.delete_team).toBe(1)
+
+    const survivors = await harness.query<{ team_id: string | null; visibility: string }>(
+      'select team_id, visibility from public.cases where id = $1',
+      [caseId],
+    )
+    // A case belongs to whoever wrote it, not to the team it was shared with.
+    expect(survivors[0]?.team_id).toBeNull()
+    // And "shared with a squad that no longer exists" is not a state worth storing.
+    expect(survivors[0]?.visibility).toBe('private')
+  })
+
+  it('leaves a teammate unable to see what they could see a moment ago', async () => {
+    const { teamId, caseId } = await buildDoomedTeam()
+    await harness.asUser(BOB)
+    expect(await harness.query('select id from public.cases where id = $1', [caseId])).toHaveLength(1)
+
+    await harness.asUser(CAROL)
+    await harness.query('select public.delete_team($1)', [teamId])
+
+    await harness.asUser(BOB)
+    expect(await harness.query('select id from public.cases where id = $1', [caseId])).toEqual([])
+  })
+
+  it('refuses while a recording would be orphaned by it', async () => {
+    const { teamId } = await buildDoomedTeam()
+    await harness.asUser(CAROL)
+    await harness.query(
+      'insert into storage.objects (bucket_id, name, owner_id) values ($1, $2, $3)',
+      ['recordings', `${teamId}/aaaaaaaa-0000-4000-8000-000000000999.opus`, CAROL],
+    )
+
+    // An object under a team that no longer exists fails every storage policy: unplayable and
+    // undeletable, stuck in the bucket for good.
+    const message = await errorFrom(() => harness.query('select public.delete_team($1)', [teamId]))
+    expect(message).toContain('recordings before deleting the team')
+
+    await harness.query('delete from storage.objects where name like $1', [`${teamId}/%`])
+    await harness.query('select public.delete_team($1)', [teamId])
+  })
+})
+
+describe('a team always has an admin', () => {
+  it('refuses to let the last admin leave', async () => {
+    await harness.asUser(CAROL)
+    const created = await harness.query<{ team_id: string }>(
+      'select * from public.create_team($1, $2)',
+      ['Solo', 'Carol'],
+    )
+    const teamId = created[0]?.team_id ?? ''
+
+    // Without this, `is_team_admin` finds nobody and the team can never be deleted by anyone —
+    // exactly the orphan `delete_team` was added to prevent.
+    const message = await errorFrom(() =>
+      harness.query('delete from public.team_members where team_id = $1 and user_id = $2', [
+        teamId,
+        CAROL,
+      ]),
+    )
+    expect(message).toContain('last admin')
+
+    await harness.query('select public.delete_team($1)', [teamId])
+  })
+
+  it('lets a plain member leave freely', async () => {
+    await harness.asUser(CAROL)
+    const created = await harness.query<{ team_id: string; invite_code: string }>(
+      'select * from public.create_team($1, $2)',
+      ['Pair', 'Carol'],
+    )
+    const teamId = created[0]?.team_id ?? ''
+
+    await harness.asUser(BOB)
+    await harness.query('select public.join_team($1, $2)', [created[0]?.invite_code, 'Bob'])
+    await harness.query('delete from public.team_members where team_id = $1 and user_id = $2', [
+      teamId,
+      BOB,
+    ])
+    // Asked as Bob, the roster is already empty — leaving revokes the read in the same statement.
+    expect(
+      await harness.query('select user_id from public.team_members where team_id = $1', [teamId]),
+    ).toEqual([])
+
+    await harness.asUser(CAROL)
+    expect(
+      await harness.query('select user_id from public.team_members where team_id = $1', [teamId]),
+    ).toHaveLength(1)
+    await harness.query('select public.delete_team($1)', [teamId])
+  })
+
+  it('lets an admin leave once they have handed over', async () => {
+    await harness.asUser(CAROL)
+    const created = await harness.query<{ team_id: string; invite_code: string }>(
+      'select * from public.create_team($1, $2)',
+      ['Handover', 'Carol'],
+    )
+    const teamId = created[0]?.team_id ?? ''
+
+    await harness.asUser(BOB)
+    await harness.query('select public.join_team($1, $2)', [created[0]?.invite_code, 'Bob'])
+
+    await harness.asUser(CAROL)
+    await harness.query(
+      "update public.team_members set role = 'admin' where team_id = $1 and user_id = $2",
+      [teamId, BOB],
+    )
+    // The guard is a prompt, not a trap: there is always a way out of it.
+    await harness.query('delete from public.team_members where team_id = $1 and user_id = $2', [
+      teamId,
+      CAROL,
+    ])
+
+    await harness.asUser(BOB)
+    await harness.query('select public.delete_team($1)', [teamId])
+  })
+
+  it('does not block the cascade when the team itself is deleted', async () => {
+    // `delete_team` removes the team, which cascades into `team_members` and fires this same
+    // trigger on the last admin's own row. Without the "is the team still there" check, deleting
+    // a team would raise the error the trigger exists to give.
+    await harness.asUser(CAROL)
+    const created = await harness.query<{ team_id: string }>(
+      'select * from public.create_team($1, $2)',
+      ['Cascade', 'Carol'],
+    )
+    const teamId = created[0]?.team_id ?? ''
+    const message = await errorFrom(() => harness.query('select public.delete_team($1)', [teamId]))
+    expect(message).toBeNull()
+
+    await harness.asPostgres()
+    expect(await harness.query('select id from public.teams where id = $1', [teamId])).toEqual([])
+  })
+})
+
 describe('rotating the invite code', () => {
   it('is refused to a member who is not an admin', async () => {
     await harness.asUser(BOB)

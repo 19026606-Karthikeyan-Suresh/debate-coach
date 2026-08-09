@@ -12,6 +12,7 @@ import { runSync, type SyncOutcome } from '../sync/engine.ts'
 import { SETTING_KEYS, readSetting, writeSetting } from '../sync/store.ts'
 import {
   createTeam as createRemoteTeam,
+  deleteTeam as deleteRemoteTeam,
   ensureSignedIn,
   getSupabase,
   joinTeam as joinRemoteTeam,
@@ -54,6 +55,13 @@ export interface SyncState {
   /** Issues a new code, invalidating the old one. Returns it, or null if the call failed. */
   readonly rotateInviteCode: (teamId: string) => Promise<string | null>
   readonly leaveTeam: (teamId: string) => Promise<void>
+  /**
+   * Deletes a team outright. Admins only, and irreversible.
+   *
+   * Returns how many shared cases stopped being shared, or null if the call failed — the two are
+   * different things to say, and zero is a real answer.
+   */
+  readonly deleteTeam: (teamId: string) => Promise<number | null>
 }
 
 /**
@@ -247,6 +255,24 @@ export function useSync(): SyncState {
     [guard, activeTeamId],
   )
 
+  const deleteTeam = useCallback(
+    async (teamId: string): Promise<number | null> =>
+      guard(async () => {
+        const client = getSupabase()
+        if (!client) {
+          return null
+        }
+        const detached = await deleteRemoteTeam(client, teamId)
+        setTeams(await myTeams(client))
+        if (activeTeamId === teamId) {
+          await writeSetting(SETTING_KEYS.activeTeamId, null)
+          setActiveTeamId(null)
+        }
+        return detached
+      }, null),
+    [guard, activeTeamId],
+  )
+
   return {
     isConfigured,
     isBusy,
@@ -264,5 +290,6 @@ export function useSync(): SyncState {
     joinTeam,
     rotateInviteCode,
     leaveTeam,
+    deleteTeam,
   }
 }

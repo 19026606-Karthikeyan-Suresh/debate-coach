@@ -290,6 +290,28 @@ export async function leaveTeam(client: SupabaseClient, teamId: string): Promise
 }
 
 /**
+ * Deletes a team. Admins only.
+ *
+ * Cases and sessions survive — they belong to whoever wrote them — and any case that was shared
+ * with this team is set back to private, because shared with a squad that no longer exists is
+ * shared with nobody.
+ *
+ * @param client - The client.
+ * @param teamId - Team to delete.
+ * @returns How many of the caller's shared cases stopped being shared, so the panel can say so
+ *   rather than leaving them to discover it.
+ * @throws If the caller is not an admin, or if the team still has recordings in storage — those
+ *   would become unreachable, and the function refuses rather than orphaning them.
+ */
+export async function deleteTeam(client: SupabaseClient, teamId: string): Promise<number> {
+  const { data, error } = await client.rpc('delete_team', { target_team_id: teamId })
+  if (error) {
+    fail('could not delete the team', error.message)
+  }
+  return typeof data === 'number' ? data : 0
+}
+
+/**
  * Uploads one case.
  *
  * @param client - The client.
