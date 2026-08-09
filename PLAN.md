@@ -71,7 +71,29 @@ comments(id, session_id, author_id, t_seconds, body)     -- coach feedback ancho
 
 `ydoc_state` is persisted periodically so someone joining a co-prep room late gets the document without a peer online. `comments` is the payoff for uploading recordings — a coach scrubs to 4:12 and leaves a note there.
 
-**One column was added locally and is deliberately not in the list above.** Phase 6's migration 2 gives the local `sessions` a `report TEXT`, and the split is by what leaves the machine: `metrics` is a dozen numbers — skip rate, filler rate, pace — and is what phase 9 replicates so a squad can see each other's trends; `report` is the detail behind them, including the transcript and every skipped clause the debater wrote. That is a recording of somebody speaking, held in text, and it stays local until there is an explicit reason for it not to. Phase 9 decides whether the Postgres side gets the column at all.
+**One column was added locally and is deliberately not in the list above.** Phase 6's migration 2 gives the local `sessions` a `report TEXT`, and the split is by what leaves the machine: `metrics` is a dozen numbers — skip rate, filler rate, pace — and is what phase 9 replicates so a squad can see each other's trends; `report` is the detail behind them, including the transcript and every skipped clause the debater wrote. That is a recording of somebody speaking, held in text, and it stays local until there is an explicit reason for it not to. **Phase 9 decided: no column.** `recording_path` went the same way for the same reason — locally it is `C:\Users\<name>\...`, which is a path on one machine and a person's name on the wire, so the Postgres column holds a storage object key and phase 10 writes it.
+
+#### What the build settled — `supabase/migrations/` and `src/sync/`
+
+**The policies are proved, not reviewed.** `src/sync/__tests__/rls.test.ts` applies the four shipped migration files, byte for byte, to a real PostgreSQL — PGlite, Postgres 18 compiled to WebAssembly, with a stub supplying only what Supabase itself provides (`auth.uid()` copied from their definition, `auth.users`, the `anon` and `authenticated` roles, and enough of `storage` for the bucket policies). Two teams, three identities, 38 assertions. That is the agent brief for `supabase-rls` — "never marks a policy done without a failing-read test" — met by a test file rather than by an agent, and it needed no Docker and no project. **Every assertion that something is hidden is paired with one that the permitted read still returns its row**, because a policy that denies everything passes half a security test and fails the product.
+
+**The membership check has to be a SECURITY DEFINER function.** A policy on `team_members` that subqueries `team_members` recurses, and Postgres reports it the first time anyone reads the table rather than when the migration runs. `is_team_member` runs as its owner, so the read inside it is not itself filtered and the recursion never starts. Both helpers run with `search_path = ''` and fully-qualified names: a SECURITY DEFINER function that resolves an unqualified name can be hijacked by anyone able to create a table earlier on the caller's path.
+
+**Grants are revoked before they are given, and one column is never given at all.** Supabase's default privileges already grant `authenticated` everything on new tables in `public`, so a policy is the second lock on a door that is otherwise open. Revoking first is also the only way to withhold `teams.invite_code_hash`: a member who can read the bcrypt hash can attack an eight-character code offline at their leisure, so the column grant lists every column except that one and `select *` on `teams` comes back as a permission error. Two tests pin exactly that.
+
+**`to_tsvector(doc::text)` is the one-liner and it is wrong** — every field key in the template becomes a search term, so "example" and "problem" match every case ever written. The generated column runs `case_search_text`, which walks the document and keeps only the leaves a debater typed. It is written as an explicit stack rather than a recursive CTE for a reason worth keeping: `left join lateral jsonb_each(value) on jsonb_typeof(value) = 'object'` does **not** stop the function running on the rows the condition excludes — the join evaluates and filters after, so `jsonb_each` gets handed an array and every insert fails. A recursive CTE also permits only one recursive reference, which rules out the obvious two-branch fix.
+
+**pgcrypto is pinned to the `extensions` schema.** Supabase pre-installs it there; a bare `create extension pgcrypto` on another instance lands it in `public`. The SECURITY DEFINER functions run with an empty `search_path` and must name the schema, so the migration creates `extensions` and installs into it explicitly — otherwise `extensions.crypt` is an unknown function at the exact moment somebody tries to join a team.
+
+**Joining tries every team, and that is a decision rather than an oversight.** bcrypt salts per row, so the stored hash is not a lookup key and there is nothing to index. At squad scale that is a few dozen hashes on an operation each person performs once. A wrong code and a malformed code return the same message, so a probe learns nothing from which one it got.
+
+**The team library is browsable and copyable, not editable.** `cases_update` grants the owner and nobody else — a teammate silently rewriting your case an hour before a round is worse than having to ask them — so opening a teammate's case takes a copy with a fresh id, exactly as a `.dbcase` import does. That is also how a squad really uses one: find last season's prep on this motion, adapt it. Two people editing one document is phase 11's problem and Yjs is its answer, not a second write policy. Search says which kind it is doing: online it runs over the generated `tsvector` and reaches every word in the case, offline it is a `LIKE` over cached motions, and a cached search that finds nothing looks exactly like an empty library.
+
+**The queue is a set of dirty rows, not a log.** A unique index on `(table_name, row_id)` means a case edited forty times on a train is one entry, and the document is re-read from SQLite at drain time so what uploads is the final text. **Cases drain before sessions, always**, because `sessions.case_id` is a foreign key and queue order is by when a row was touched, which says nothing about that; a session whose case is not going up loses its link rather than the whole row. A failure is per row — one case Postgres refuses must not stop the other thirty-nine — and the run reports pushed, failed, retrying and *stuck* separately, because a row past twelve attempts needs a human rather than another retry. A first sign-in backfills the queue from everything already in SQLite, so turning the team layer on after a season uploads the season rather than only what happens next.
+
+**The session is chunked across credential entries.** Windows caps a credential blob at 2560 bytes and `keyring` writes UTF-16, so the real limit is about 1280 characters — and a Supabase session is a JWT, a refresh token and a user object, comfortably past it. Written whole it fails with `ERROR_INVALID_PARAMETER`, which surfaces as "the parameter is incorrect" and says nothing about length. The count is written last and cleared first, so an interrupted save reads back as no session — a fresh sign-in rather than half of two sessions spliced together.
+
+**Deliberately not built: the recording upload.** The bucket, its four policies, `storage_team_id` and `sessions.recording_path` all ship, so phase 10 is an upload call and not a schema change. What is missing is the Opus encode, and it is missing because the obvious way to add it is wrong twice over: the `opus` bindings need cmake, which is the exact C toolchain phase 7 refused to put between a teammate and a build, and the alternative — a `MediaRecorder` on the stream the capture graph already opens — changes the phase 5 capture path that **no microphone has ever been through**. Layering an unverifiable change on an unverifiable base is how two things break at once. It belongs in phase 10, beside the playback it exists for, and behind a working microphone. Verification step 13 stays open.
 
 ---
 
@@ -351,7 +373,8 @@ No script loaded: transcribe an opponent's speech, then optionally have Claude f
 
 ```
 supabase/
-  migrations/*.sql         schema, RLS policies, join_team(), rotate_invite_code()
+  README.md                how to apply them, and what they assume of a project
+  migrations/*.sql         schema + search, RLS, team functions, recordings bucket
 src-tauri/
   tauri.conf.json          window, SQLite plugin. No externalBin — see the whisper note
   tauri.bundle-whisper.conf.json   merged in at release time to bundle cli + models
@@ -361,7 +384,7 @@ src-tauri/
   src/audio.rs             PCM buffer, WAV writer (Opus encode lands in phase 9)
   src/coach.rs             Anthropic calls, keychain-backed key
   src/export.rs            extension-checked file write + `.dbcase` read
-  src/sync.rs              offline queue, upload/download, conflict handling
+  src/sync.rs              the Supabase session, chunked across credential entries
   src/db.rs                SQLite migrations
 src/
   main.tsx, App.tsx
@@ -379,8 +402,14 @@ src/
   hooks/useSpeechTimer.ts  deadline-based speech clock, fires each knock once
   hooks/useSpeechSession.ts  source lifecycle + incremental alignment
   db/index.ts              SQLite queries, Yjs doc <-> row projection
-  sync/supabase.ts         client, auth, join_team, library queries
-  sync/provider.ts         Yjs over Realtime; y-webrtc LAN fallback
+  sync/config.ts           whether this build has a project at all (pure)
+  sync/rows.ts             local row <-> Postgres row, and what never goes up (pure)
+  sync/store.ts            dirty-row queue, settings, cached library; pure backoff
+  sync/supabase.ts         client, anonymous auth, team functions, library queries
+  sync/engine.ts           the drain: cases before sessions, failure per row
+  sync/library.ts          browse online or cached, and copy a teammate's case
+  sync/provider.ts         Yjs over Realtime; y-webrtc LAN fallback (phase 11)
+  hooks/useSync.ts         sign-in, teams, drain — one screen's worth of state
   coach/types.ts           CoachResult, DepthAxis, CoachPrompt — Layer B's contract
   coach/schema.ts          the JSON schemas; the structural half of the Socratic rule
   coach/prompts.ts         system + user prompts, built through buildSections
@@ -436,8 +465,8 @@ src/
 6. ~~Report + session history~~ — done
 7. ~~Claude Layer B~~ — done
 8. ~~Export + `.docx` / `.dbcase`~~ — done
-9. Supabase: schema, RLS, invite-code join, library sync, recording upload ← **next**
-10. Coach comments on recordings
+9. ~~Supabase: schema, RLS, invite-code join, library sync~~ — done *(recording upload moved to 10, with the microphone it needs)*
+10. Coach comments on recordings, and the Opus upload they are anchored to ← **next**
 11. Live co-prep over Realtime, then the y-webrtc LAN fallback
 
 ---
@@ -563,11 +592,13 @@ Each of these is downstream of an interface that will already exist when the age
 | **whisper-bench** | 5 | Empirical. Measures live latency and word error rate for `base.en` vs `small.en` on real recordings; tunes chunk size and window overlap. Reports numbers, doesn't guess. Long-running and decides nothing. | sonnet |
 | **rust-sidecar** | 5 | Tauri v2 specifics — `externalBin`, `bundle.resources`, capability and permission JSON, sidecar spawn, raw-body IPC, event channels. Version-specific, fiddly, and genuinely isolated from app logic. | opus |
 | **prompt-guard** | 7 | Red-teams the Socratic constraint. Actively tries to make Layer B write my argument, and verifies the JSON schema plus the validator both hold. Runs on every prompt change. Adversarial against a fixed schema. | opus |
-| **supabase-rls** | 9 | Writes migrations and *proves* the policies by attempting cross-team reads from a second identity. Security-critical and quietly easy to get wrong. Never marks a policy done without a failing-read test. | opus |
+| **supabase-rls** | 9 | ~~Writes migrations and *proves* the policies by attempting cross-team reads from a second identity. Security-critical and quietly easy to get wrong. Never marks a policy done without a failing-read test.~~ **Shipped as a test file instead — see below.** | opus |
 
 Three of these land in phase 5, so they are worth writing *before* it rather than during.
 
 **Phase 7 shipped without `prompt-guard`, and the reason is the one the table itself gives.** The brief was "red-team the Socratic constraint, verify the schema and the validator both hold" — adversarial against a fixed target, which is exactly where an agent pays. What it turned out to be was 46 assertions in three files, and the ones that mattered were not adversarial at all: the accepting case beside each rejecting pattern, which is what stops the guard eating honest questions. A cold agent trying to break the fence would have written more attacks on it and none of those. The content survived as a convention, the way `analyzer-rule`'s did: **every voice rule ships with an example it must let through.** The agent still has a real job on the next prompt change, when the fence is fixed and only the wording moves.
+
+**`supabase-rls` was the last one standing, and phase 9 dissolved it the same way phase 3 dissolved `analyzer-rule` — by finding the structure that does the job every run instead of when someone remembers.** The brief was exactly right about what mattered: never mark a policy done without a failing-read test. What it assumed was that proving it needed a second live identity against a hosted project, which is a thing you do once and then stop doing. PGlite is Postgres compiled to WebAssembly, so the failing-read test is 38 assertions in `npx vitest run` with no Docker, no project and no credentials — and the policies are re-proved on every commit rather than on the day someone runs the agent. The half the brief could not have supplied is the half that turned out to matter most: **every denial assertion is paired with a permitted one**, because an agent trying to break in has no reason to check that the front door still opens. That is the same convention `analyzer-rule` left behind and `prompt-guard` left behind, arrived at for the third time.
 
 **Phase 5 shipped without them too, and this time for a mechanical reason rather than a judgement:** `.claude/` is in `.gitignore` as per-machine state, so an agent definition written there is not team state and never reaches the repo. That is fine for `aligner-tester` in hindsight — the adversarial cases it was briefed to generate are the eight `describe` blocks in `align.test.ts`, written alongside the aligner while the contract was still moving, and the one that mattered (a jump between substantives discarding the confirmed prefix) came out of watching the DP misbehave, not out of a cold brief. `whisper-bench` still has a real job and now has a real surface to point at: `TranscriptionOptions` exists precisely so the window, tail and tick can be measured rather than guessed, and none of them has been. `rust-sidecar`'s work is done. If the agents are wanted, un-ignore `.claude/agents/` first.
 
@@ -579,7 +610,7 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
 
 ## Verification
 
-1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 752 tests across 34 files, alongside `cargo test` at 42.
+1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 820 tests across 38 files, alongside `cargo test` at 47.
 2. **Regression fixture from real work.** Seed the fake-news case from my friend's filled example (`reference/template-filled-example.docx`). It has genuine, checkable defects the analyzer must catch:
    - `subOverlap` flags Sub 1 ("fake news causes irreparable damage") against Sub 2 ("allowing the spread is supporting it") — they share most of their content vocabulary.
    - `vagueness` flags "damages lives", "individuals in society", "many damages".
@@ -607,7 +638,9 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
 11. **Export round-trip.** **Done, including the part only Word can answer.** The generated `.docx` is read back by `readDocx.ts` — the same reader every fidelity test runs against the real template — and every question in it is looked back up in `reference/template-blank.docx`. Beyond that: .NET's `ZipFile` opens the archive, every one of the five XML parts parses, and **Microsoft Word opens both exports through COM** — 12 tables in the case export with "Motion:" in the first cell, and the custom styles resolving to `Heading 1` at outline level 1, which is what proves `styles.xml` was accepted rather than discarded. A `.dbcase` round-trips to an equal `Case`, and re-importing one already present lands as a copy rather than over the top of it. The speech sheet was driven in a browser: its rendered paragraphs are character-identical to the model's, and every `@media print` selector was pulled out of the live stylesheet and matched against the real DOM.
 
     **Still open**: nothing has been through the actual save dialog. The extension check, the argument shape and the file read are covered by `cargo test`, and the capability resolves `dialog:default` at build time, but no path has come back from `save()` on this machine — that needs `npm run tauri dev` and a hand on the mouse.
-12. **RLS test** — join two teams with different codes from two installs and confirm neither can read the other's cases, sessions, or recordings by any query. Mark a case `private` and confirm a teammate cannot see it. Rotate the invite code and confirm the old one stops working.
-13. **Recording round-trip** — record a speech, confirm the Opus upload is roughly a tenth the WAV's size, then play it back on a second machine and leave a comment at a timestamp that appears on the first.
+12. **RLS test** — join two teams with different codes from two installs and confirm neither can read the other's cases, sessions, or recordings by any query. Mark a case `private` and confirm a teammate cannot see it. Rotate the invite code and confirm the old one stops working. **Done, against a real Postgres rather than two installs.** `src/sync/__tests__/rls.test.ts` applies the four shipped migration files to PGlite and runs Alice, Bob and Carol across two teams: every cross-team read of a team row, a member list, a case, a session, a motion, a comment and a storage object comes back empty or denied, including when the case id is passed in exactly. A private case is hidden from a teammate and absent from their search. A member cannot select `invite_code_hash` or `*` from `teams`. Nobody can insert themselves into `team_members` — there is no grant, and `join_team` is the only door. Rotation invalidates the old code and the new one works; a non-admin and an outsider are both refused. A storage path whose first segment is not a uuid is *denied* rather than raising a cast error, which would surface as a 500 and be recorded nowhere as an access denial.
+
+    **Still open**: two actual installs against a hosted project. What PGlite cannot exercise is PostgREST's own behaviour — how the schema cache resolves an embed, what a policy denial looks like through the REST layer, and whether anonymous sign-in is enabled on the project at all.
+13. **Recording round-trip** — record a speech, confirm the Opus upload is roughly a tenth the WAV's size, then play it back on a second machine and leave a comment at a timestamp that appears on the first. **Moved into phase 10.** The bucket and its policies ship with phase 9; the Opus encode does not, because both ways of adding it are wrong until there is a working microphone — see the note at the end of the Supabase section.
 14. **Co-prep test** — two instances edit different fields of one case simultaneously; confirm convergence with no lost text. Pull one machine off the network mid-edit and confirm it reconciles on rejoin. Then kill internet on both and confirm the LAN fallback still merges.
 15. **Conventions hold** — `npm run lint` and `cargo clippy -- -D warnings` both pass with the docstring rules on. Then delete a docstring and a param description and confirm CI actually fails, so the rule isn't quietly disabled.

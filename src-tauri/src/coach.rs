@@ -69,11 +69,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Human name of the credential store this build actually got.
 #[cfg(windows)]
-const CREDENTIAL_STORE: &str = "Windows Credential Manager";
+pub const CREDENTIAL_STORE: &str = "Windows Credential Manager";
 
 /// Human name of the credential store this build actually got.
 #[cfg(not(windows))]
-const CREDENTIAL_STORE: &str = "in-memory store (forgotten on quit)";
+pub const CREDENTIAL_STORE: &str = "in-memory store (forgotten on quit)";
 
 /// Everything that can go wrong reaching Claude.
 ///

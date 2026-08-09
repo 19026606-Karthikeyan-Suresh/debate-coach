@@ -2,7 +2,7 @@
 //!
 //! Phase 1 wired the window and the local database; phase 5 added audio capture and the whisper
 //! sidecar; phase 6 added the post-speech pass the report is built from; phase 7 the Anthropic
-//! proxy; phase 8 the export path. The sync queue lands in a later phase as a sibling module.
+//! proxy; phase 8 the export path; phase 9 the Supabase session the team layer signs in with.
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
@@ -11,6 +11,7 @@ pub mod audio;
 pub mod coach;
 pub mod db;
 pub mod export;
+pub mod sync;
 pub mod whisper;
 
 /// Boots the Tauri application and blocks until the window closes.
@@ -44,6 +45,10 @@ pub fn run() {
             coach::run_coach_request,
             export::write_export_file,
             export::read_case_file,
+            sync::sync_session_get,
+            sync::sync_session_set,
+            sync::sync_session_clear,
+            sync::sync_identity_status,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
