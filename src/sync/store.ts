@@ -14,8 +14,13 @@
 import { getDatabase } from '../db/connection.ts'
 import type { TeamCaseSummary } from './rows.ts'
 
-/** Tables that replicate. Nothing else has a Postgres counterpart worth queueing. */
-export type SyncTable = 'cases' | 'sessions'
+/**
+ * Tables that replicate. Nothing else has a Postgres counterpart worth queueing.
+ *
+ * The order they are declared in is the order they drain in, and it is a foreign-key order:
+ * `sessions.case_id` references `cases`, and `comments.session_id` references `sessions`.
+ */
+export type SyncTable = 'cases' | 'sessions' | 'comments'
 
 /** What happened locally. A delete supersedes an upsert for the same row. */
 export type SyncOperation = 'upsert' | 'delete'
@@ -173,12 +178,17 @@ export async function recordQueueFailure(entryId: number, message: string): Prom
 }
 
 /**
- * Queues every local case and session that is not already queued.
+ * Queues every local case, session and comment that is not already queued.
  *
  * Run once, the first time an install signs in. Without it, turning the team layer on after a
  * season of local work uploads only what changes *next*: the queue records edits, and nothing
  * ever edited the forty cases already sitting in SQLite. `ON CONFLICT DO NOTHING` means a row
  * with a pending edit keeps its own entry rather than having its attempt count reset.
+ *
+ * **Recordings are not backfilled, and nothing here uploads one.** The queue carries rows, and a
+ * row is a few hundred bytes; an audio file is a person speaking and goes up when they ask. A
+ * first sign-in that pushed a season of speeches over tournament wifi would be both a surprise
+ * and a bandwidth bill.
  *
  * @returns How many rows were added, so the first sync can say what it is doing.
  */
@@ -186,10 +196,13 @@ export async function backfillQueue(): Promise<number> {
   const database = await getDatabase()
   const queuedAt = new Date().toISOString()
   let added = 0
-  for (const table of ['cases', 'sessions'] as const) {
+  for (const table of ['cases', 'sessions', 'comments'] as const) {
+    // Comments pulled from the project are already up there; queueing them would push every one
+    // straight back on the first drain after a sign-in.
+    const filter = table === 'comments' ? 'WHERE is_remote = 0' : ''
     const result = await database.execute(
       `INSERT INTO sync_queue (table_name, row_id, operation, queued_at, attempts)
-       SELECT '${table}', id, 'upsert', $1, 0 FROM ${table}
+       SELECT '${table}', id, 'upsert', $1, 0 FROM ${table} ${filter}
        ON CONFLICT(table_name, row_id) DO NOTHING`,
       [queuedAt],
     )

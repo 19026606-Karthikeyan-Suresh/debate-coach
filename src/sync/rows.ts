@@ -8,9 +8,10 @@
  * - **The local database has no identity.** One install, one debater, so `owner_id`, `user_id`
  *   and `team_id` are not stored locally at all; they are stamped on at push time from whoever
  *   is signed in and whichever team is active.
- * - **`recording_path` is never pushed.** Locally it is `C:\Users\<name>\AppData\...\speech.wav`,
+ * - **The local `recording_path` is never pushed.** It is `C:\Users\<name>\AppData\...\speech.wav`,
  *   which is a path on one machine and a person's name on the wire. The column in Postgres holds
- *   a storage object key, which phase 10 writes when it uploads the Opus copy.
+ *   a storage object key instead, and phase 10 keeps that key in its own local column so there is
+ *   nothing here that could send the wrong one.
  * - **`report` has no column to go to.** Phase 6 split a speech in two by what may leave the
  *   machine; the transcript stays.
  *
@@ -19,6 +20,7 @@
 
 import type { FormatId, Side } from '../formats/index.ts'
 import type { SessionSummary } from '../db/index.ts'
+import type { SpeechComment } from '../speech/comments.ts'
 import type { Case, Visibility } from '../types/case.ts'
 import { hydrateCase } from '../types/createCase.ts'
 
@@ -125,9 +127,135 @@ export function sessionToRemoteRow(
     role: session.role,
     duration_s: session.durationSeconds,
     metrics: session.metrics,
-    // Phase 10's job, when there is an Opus copy in the bucket for it to name.
-    recording_path: null,
+    // The bucket key, never the local WAV path. Null until the debater shares the speech.
+    recording_path: session.recordingObjectPath,
     created_at: session.createdAt,
+  }
+}
+
+/**
+ * The key a session's recording lives under in the `recordings` bucket.
+ *
+ * **The team id is the first path segment because the storage policy has nothing else to read.**
+ * `storage.objects` carries a bucket, a name and an owner, so "does this recording belong to a
+ * team you are in" is answered out of the path — which makes the path a security boundary rather
+ * than a filing convention, and makes this function the one place its shape is decided.
+ *
+ * @param teamId - The team the speech is being shared with. There is no key without one: a
+ *   recording uploaded outside a team is readable by nobody and deletable by nobody, so the
+ *   caller is expected to refuse before it gets here.
+ * @param sessionId - The session. One recording per speech, so the id is the whole filename.
+ * @returns The object key.
+ */
+export function recordingObjectKey(teamId: string, sessionId: string): string {
+  return `${teamId}/${sessionId}.opus`
+}
+
+/** A `public.comments` row. */
+export interface RemoteCommentRow {
+  readonly id: string
+  readonly session_id: string
+  readonly author_id: string
+  readonly t_seconds: number
+  readonly body: string
+  readonly created_at: string
+}
+
+/**
+ * Prepares a coach comment for upload.
+ *
+ * @param comment - The local note.
+ * @param userId - The signed-in `auth.uid()`. Used rather than the comment's stored `authorId`,
+ *   which is null for anything written before this install first signed in — and a row whose
+ *   `author_id` is not the caller is rejected by `comments_insert` rather than filed under
+ *   somebody else.
+ * @returns The row to upsert.
+ */
+export function commentToRemoteRow(comment: SpeechComment, userId: string): RemoteCommentRow {
+  return {
+    id: comment.id,
+    session_id: comment.sessionId,
+    author_id: comment.authorId ?? userId,
+    t_seconds: comment.atSeconds,
+    body: comment.body,
+    created_at: comment.createdAt,
+  }
+}
+
+/**
+ * Turns a downloaded comment back into a local one.
+ *
+ * @param row - A row from `public.comments`.
+ * @param authorName - The author's display name from the team roster, or '' when they are not on
+ *   it — a coach who has left the squad still wrote the note, and dropping their comment to avoid
+ *   an empty name would lose the advice.
+ * @returns The comment, marked remote so a pull does not queue it straight back up.
+ */
+export function remoteRowToComment(row: RemoteCommentRow, authorName: string): SpeechComment {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    authorId: row.author_id,
+    authorName,
+    atSeconds: row.t_seconds,
+    body: row.body,
+    createdAt: row.created_at,
+    isRemote: true,
+  }
+}
+
+/** A teammate's speech, as the Review screen lists it. */
+export interface TeamSessionSummary {
+  readonly id: string
+  readonly userId: string
+  /** Their display name, or '' when they never set one. */
+  readonly ownerName: string
+  /** The motion, when the case was shared too. Empty otherwise — a session is not a case. */
+  readonly motion: string
+  readonly format: FormatId
+  readonly role: string
+  readonly durationSeconds: number
+  /** Key in the `recordings` bucket. Only sessions that have one are listed. */
+  readonly recordingPath: string
+  readonly createdAt: string
+}
+
+/** A row of the team session query, before the owner's name is attached. */
+export interface RemoteTeamSessionRow {
+  readonly id: string
+  readonly user_id: string
+  readonly format: FormatId
+  readonly role: string
+  readonly duration_s: number
+  readonly recording_path: string
+  readonly created_at: string
+  readonly cases: { motion: string } | { motion: string }[] | null
+}
+
+/**
+ * Flattens a team session row and names its speaker.
+ *
+ * @param row - One row from the team session query.
+ * @param ownerName - Their display name from the roster, or ''.
+ * @returns The summary. The embedded case is read through the same array-tolerant branch
+ *   `myTeams` uses: PostgREST returns a to-one embed as an object or as a single-element array
+ *   depending on when its schema cache was last reloaded, not on the schema.
+ */
+export function remoteRowToTeamSession(
+  row: RemoteTeamSessionRow,
+  ownerName: string,
+): TeamSessionSummary {
+  const embedded = Array.isArray(row.cases) ? row.cases[0] : row.cases
+  return {
+    id: row.id,
+    userId: row.user_id,
+    ownerName,
+    motion: embedded?.motion ?? '',
+    format: row.format,
+    role: row.role,
+    durationSeconds: row.duration_s,
+    recordingPath: row.recording_path,
+    createdAt: row.created_at,
   }
 }
 

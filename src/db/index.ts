@@ -7,6 +7,7 @@
  */
 
 import type { FormatId, Side } from '../formats/index.ts'
+import type { SpeechComment } from '../speech/comments.ts'
 import type { SessionMetrics } from '../speech/metrics.ts'
 import type { SpeechReport } from '../speech/report.ts'
 import { enqueueChange } from '../sync/store.ts'
@@ -168,7 +169,15 @@ export interface SessionSummary {
   readonly role: string
   readonly durationSeconds: number
   readonly metrics: SessionMetrics
+  /** The local WAV. Null on the browser fallback, which records nothing. */
   readonly recordingPath: string | null
+  /**
+   * Key inside the `recordings` storage bucket, once the debater has shared this speech.
+   *
+   * Null is the ordinary state and means "not uploaded", never "upload failed" — a recording goes
+   * up when it is asked for, not because a report was generated.
+   */
+  readonly recordingObjectPath: string | null
   readonly createdAt: string
 }
 
@@ -182,6 +191,7 @@ interface SessionRow {
   duration_s: number
   metrics: string
   recording_path: string | null
+  recording_object_path: string | null
   created_at: string
   report: string | null
 }
@@ -241,7 +251,8 @@ export async function listSessions(limit = 100): Promise<SessionSummary[]> {
   const database = await getDatabase()
   const rows = await database.select<SessionRow[]>(
     `SELECT sessions.id, sessions.case_id, sessions.format, sessions.role, sessions.duration_s,
-            sessions.metrics, sessions.recording_path, sessions.created_at, cases.motion
+            sessions.metrics, sessions.recording_path, sessions.recording_object_path,
+            sessions.created_at, cases.motion
      FROM sessions LEFT JOIN cases ON cases.id = sessions.case_id
      ORDER BY sessions.created_at DESC LIMIT $1`,
     [limit],
@@ -260,11 +271,35 @@ export async function listSessions(limit = 100): Promise<SessionSummary[]> {
             durationSeconds: row.duration_s,
             metrics,
             recordingPath: row.recording_path,
+            recordingObjectPath: row.recording_object_path,
             createdAt: row.created_at,
           },
         ]
       : []
   })
+}
+
+/**
+ * Records that a speech's audio is now in the bucket.
+ *
+ * Written as its own statement rather than through {@link saveSession}, which rewrites the row
+ * from a report: the upload happens minutes or days after the report was built, and re-deriving
+ * every other column from a stale report to change one of them is how a session loses its
+ * accurate numbers.
+ *
+ * @param sessionId - Primary key. An unknown id is a no-op.
+ * @param objectPath - The storage key, or null to record that the recording is no longer up there.
+ */
+export async function setSessionRecordingObject(
+  sessionId: string,
+  objectPath: string | null,
+): Promise<void> {
+  const database = await getDatabase()
+  await database.execute('UPDATE sessions SET recording_object_path = $2 WHERE id = $1', [
+    sessionId,
+    objectPath,
+  ])
+  await enqueueChange('sessions', sessionId, 'upsert')
 }
 
 /** Parses a stored metrics blob, or null when it is missing or not the current shape. */
@@ -305,8 +340,9 @@ export async function loadSessionReport(sessionId: string): Promise<SpeechReport
 /**
  * Deletes a session.
  *
- * Leaves the WAV on disk. Removing a recording is a separate, louder action than tidying a list,
- * and a file deleted from under a coach's comment in phase 10 is not recoverable.
+ * Leaves the audio on disk. Removing a recording is a separate, louder action than tidying a list,
+ * and a file deleted from under a coach's comment is not recoverable — `deleteRecording` in
+ * `opus.rs` is the one that takes the files, and the Review screen asks before calling it.
  *
  * @param sessionId - Primary key. Deleting an unknown id is a no-op, not an error.
  */
@@ -314,4 +350,137 @@ export async function deleteSession(sessionId: string): Promise<void> {
   const database = await getDatabase()
   await database.execute('DELETE FROM sessions WHERE id = $1', [sessionId])
   await enqueueChange('sessions', sessionId, 'delete')
+}
+
+/** Shape of a `comments` row as the SQL plugin returns it. */
+interface CommentRow {
+  id: string
+  session_id: string
+  author_id: string | null
+  author_name: string
+  t_seconds: number
+  body: string
+  created_at: string
+  is_remote: number
+}
+
+/** Turns a stored row into a comment. */
+function rowToComment(row: CommentRow): SpeechComment {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    authorId: row.author_id,
+    authorName: row.author_name,
+    atSeconds: row.t_seconds,
+    body: row.body,
+    createdAt: row.created_at,
+    isRemote: row.is_remote !== 0,
+  }
+}
+
+/**
+ * Every comment on one speech.
+ *
+ * @param sessionId - The session. An unknown id returns an empty list, which is also what a
+ *   speech nobody has commented on returns — the two are the same thing to show.
+ * @returns Comments earliest first.
+ */
+export async function listComments(sessionId: string): Promise<SpeechComment[]> {
+  const database = await getDatabase()
+  const rows = await database.select<CommentRow[]>(
+    `SELECT id, session_id, author_id, author_name, t_seconds, body, created_at, is_remote
+     FROM comments WHERE session_id = $1 ORDER BY t_seconds, created_at`,
+    [sessionId],
+  )
+  return rows.map(rowToComment)
+}
+
+/**
+ * Loads one comment.
+ *
+ * Separate from {@link listComments} because the drain addresses a single row by id and has no
+ * session to list against — the queue holds `(table, row_id)` and nothing else.
+ *
+ * @param commentId - Primary key.
+ * @returns The comment, or null when it has been deleted since it was queued.
+ */
+export async function loadComment(commentId: string): Promise<SpeechComment | null> {
+  const database = await getDatabase()
+  const rows = await database.select<CommentRow[]>(
+    `SELECT id, session_id, author_id, author_name, t_seconds, body, created_at, is_remote
+     FROM comments WHERE id = $1`,
+    [commentId],
+  )
+  const row = rows[0]
+  return row ? rowToComment(row) : null
+}
+
+/**
+ * Writes a comment, or overwrites the one already there.
+ *
+ * @param comment - The note. Its `id` is the primary key, so re-saving one edits it rather than
+ *   adding a second.
+ * @param queueForSync - False when the comment came *from* the project, so a pull does not push
+ *   the same row straight back. Defaults to true, which is what a comment typed here wants.
+ */
+export async function saveComment(comment: SpeechComment, queueForSync = true): Promise<void> {
+  const database = await getDatabase()
+  await database.execute(
+    `INSERT INTO comments (id, session_id, author_id, author_name, t_seconds, body, created_at,
+                           is_remote)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT(id) DO UPDATE SET
+       author_name = excluded.author_name,
+       t_seconds = excluded.t_seconds,
+       body = excluded.body,
+       is_remote = excluded.is_remote`,
+    [
+      comment.id,
+      comment.sessionId,
+      comment.authorId,
+      comment.authorName,
+      comment.atSeconds,
+      comment.body,
+      comment.createdAt,
+      comment.isRemote ? 1 : 0,
+    ],
+  )
+  if (queueForSync) {
+    await enqueueChange('comments', comment.id, 'upsert')
+  }
+}
+
+/**
+ * Deletes a comment.
+ *
+ * @param commentId - Primary key. Deleting an unknown id is a no-op.
+ */
+export async function deleteComment(commentId: string): Promise<void> {
+  const database = await getDatabase()
+  await database.execute('DELETE FROM comments WHERE id = $1', [commentId])
+  await enqueueChange('comments', commentId, 'delete')
+}
+
+/**
+ * Replaces the comments a session has, from the project.
+ *
+ * Replaces rather than merges, for the same reason `cacheTeamLibrary` does: a comment a coach
+ * deleted has to disappear here too, and merging leaves it on screen forever. **Only remote
+ * comments are cleared** — a note typed on this machine that has not drained yet is not gone, it
+ * is pending, and dropping it would lose it silently.
+ *
+ * @param sessionId - The session these belong to.
+ * @param comments - The full current list from Postgres.
+ */
+export async function replaceRemoteComments(
+  sessionId: string,
+  comments: readonly SpeechComment[],
+): Promise<void> {
+  const database = await getDatabase()
+  await database.execute('DELETE FROM comments WHERE session_id = $1 AND is_remote = 1', [
+    sessionId,
+  ])
+  for (const comment of comments) {
+    await saveComment({ ...comment, isRemote: true }, false)
+  }
 }

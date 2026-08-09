@@ -36,6 +36,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: SYNC_STATE,
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "uploaded recordings, and who wrote each coach comment",
+            sql: RECORDINGS_AND_COMMENTS,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -184,4 +190,31 @@ CREATE TABLE IF NOT EXISTS team_library (
 CREATE INDEX IF NOT EXISTS idx_team_library_updated ON team_library(updated_at DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_queue_row ON sync_queue(table_name, row_id);
+"#;
+
+// What phase 10 needs to hold a recording in two places at once, and a comment written by
+// somebody who is not this install.
+//
+// `recording_path` has meant the local WAV since phase 1 and still does. `recording_object_path`
+// is the key inside the `recordings` storage bucket, and the two are deliberately separate
+// columns rather than one that changes meaning: the local file is `C:\Users\<name>\...`, which is
+// a path on one machine and a person's name on the wire, so `rows.ts` pushes the object key and
+// has nothing to accidentally send instead. Null until the debater shares the speech; a recording
+// is not uploaded because a report was generated.
+//
+// `comments.author_name` is denormalised the same way `team_library.owner_name` is, and for the
+// same reason: a comment has to say who left it while the app is offline, and the roster that
+// would resolve `author_id` is a network call. It is a copy taken when the comment arrives, so a
+// teammate who renames themselves renames their future comments and not their past ones — which
+// is the honest reading of a note somebody left in March.
+//
+// `is_remote` marks a comment that arrived from the project rather than being typed here. Its
+// only job is to keep a pulled comment out of the sync queue: comments share the queue's unique
+// `(table_name, row_id)` index with cases and sessions, and a row that is pushed back the moment
+// it is pulled turns every drain into a round trip that changes nothing.
+const RECORDINGS_AND_COMMENTS: &str = r#"
+ALTER TABLE sessions ADD COLUMN recording_object_path TEXT;
+
+ALTER TABLE comments ADD COLUMN author_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE comments ADD COLUMN is_remote INTEGER NOT NULL DEFAULT 0;
 "#;

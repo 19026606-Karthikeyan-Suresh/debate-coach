@@ -34,7 +34,7 @@ SQLite in the Tauri app is the **source of truth**. Supabase is a replication ta
 | Identity | Supabase anonymous sign-in → persistent `auth.uid()` stored in the Windows credential store |
 | Membership | `join_team(code)` Postgres function, `SECURITY DEFINER`, validates a hashed invite code and inserts a `team_members` row |
 | Access control | RLS on every table, keyed off `team_members`; `visibility = 'private'` restricts to owner |
-| Recordings | Opus-encoded, uploaded to Supabase Storage in the background |
+| Recordings | Opus-encoded by a pure-Rust libopus port, uploaded to Supabase Storage when the debater shares them |
 
 **Why anonymous auth rather than passwordless email:** it gives each install a real, stable user id — so edits are attributable, presence works in co-prep, and a recording belongs to a person — while onboarding a squad before a tournament is still just typing a code.
 
@@ -94,6 +94,8 @@ comments(id, session_id, author_id, t_seconds, body)     -- coach feedback ancho
 **The session is chunked across credential entries.** Windows caps a credential blob at 2560 bytes and `keyring` writes UTF-16, so the real limit is about 1280 characters — and a Supabase session is a JWT, a refresh token and a user object, comfortably past it. Written whole it fails with `ERROR_INVALID_PARAMETER`, which surfaces as "the parameter is incorrect" and says nothing about length. The count is written last and cleared first, so an interrupted save reads back as no session — a fresh sign-in rather than half of two sessions spliced together.
 
 **Deliberately not built: the recording upload.** The bucket, its four policies, `storage_team_id` and `sessions.recording_path` all ship, so phase 10 is an upload call and not a schema change. What is missing is the Opus encode, and it is missing because the obvious way to add it is wrong twice over: the `opus` bindings need cmake, which is the exact C toolchain phase 7 refused to put between a teammate and a build, and the alternative — a `MediaRecorder` on the stream the capture graph already opens — changes the phase 5 capture path that **no microphone has ever been through**. Layering an unverifiable change on an unverifiable base is how two things break at once. It belongs in phase 10, beside the playback it exists for, and behind a working microphone. Verification step 13 stays open.
+
+**Phase 10 confirmed the schema half exactly and found the third way on the encode.** Nothing in `supabase/migrations/` changed: the bucket, the four storage policies and the comment policies were already what an upload and a comment thread need, which is what "an upload call and not a schema change" was worth. The encode is a *pure-Rust port* of libopus — a route neither of the two wrong ones covers, because it builds with cargo alone and it reads a finished WAV rather than touching capture. Three assertions were added to the RLS suite for the two directions phase 10 made reachable and phase 9 had no caller for: the debater whose speech it is can read a coach's note on it, cannot delete it, and the coach can.
 
 ---
 
@@ -292,7 +294,7 @@ Three things in the template are followed rather than improved, each recorded at
 - `whisper-cli` compiled for Windows plus `ggml-base.en.bin` and `ggml-small.en.bin`, bundled by `tauri.bundle-whisper.conf.json` at release time. One installer, nothing for a teammate to download or compile — but see the note on `externalBin` below for why that config is separate from `tauri.conf.json`.
 - **Live path**: Web Audio API captures mic → 16 kHz mono PCM → one Tauri command with a raw body → a Rust worker thread runs `base.en` over a rolling window → transcripts return on the `speech://transcript` event channel.
 - **Report path**: the speech is saved as WAV; afterwards `retranscribe_speech` re-runs `whisper-cli` with `small.en`, alignment is recomputed, and the report is built from the better transcript. The numbers I keep are the trustworthy ones.
-- Rust encodes the WAV to Opus for upload; the WAV stays local. *(Phase 9, with the upload it exists for.)*
+- Rust encodes the WAV to Opus for upload; the WAV stays local. *(Phase 10. `opus.rs` over a pure-Rust port of libopus, with `ogg.rs` writing the container.)*
 - `TranscriptionSource` interface with `WhisperLiveSource` primary and `WebSpeechSource` retained as a fallback if the sidecar is missing or fails to launch.
 
 #### What the build settled — `src-tauri/src/whisper.rs`
@@ -338,7 +340,7 @@ The core algorithm, and the thing that actually fixes the skipping.
 
 Scrolling and the active-segment highlight both had to be made instant: see the note in CLAUDE.md on anything that needs a painted frame. The transition version left the highlight on the wrong segment indefinitely.
 - **Report** — skipped words grouped by section and linked back to their case field; pace over time; fillers and pauses >2 s with timestamps; time per section vs plan; improvised additions offered for saving back into the case.
-- **Playback with comments** — scrub the recording, and a coach's timestamped notes appear inline.
+- **Playback with comments** — scrub the recording, and a coach's timestamped notes appear inline. *(Built in phase 10; the recording that plays is the Opus copy, made on the way to the player rather than only on the way to the bucket, so the encoder runs whenever anybody scrubs rather than only when somebody shares.)*
 - **Session history** charts skip rate, filler rate, and pace across sessions, mine and the team's.
 
 #### What the build settled — the report (`src/speech/report.ts`, `metrics.ts`, `fillers.ts`)
@@ -363,6 +365,26 @@ They do not agree, and the UI says so on every screen that shows either. Filler 
 
 **Deliberately not built here.** Playback is phase 10, with the coach comments it exists for — the WAV is kept and its path is on the session row, but there is no scrubber. And `SPEAKING_WORDS_PER_MINUTE` is still 160 rather than this debater's own measured pace: the sessions now hold the number, but feeding it back into the compiler's length estimate would make the script's "6:38" mean something different on every machine and after every speech, and that wants deciding rather than doing quietly.
 
+#### What the build settled — the recording (`src-tauri/src/opus.rs`, `ogg.rs`, `src/components/speech/Playback.tsx`)
+
+**A pure-Rust port of libopus is the third option, and it costs neither of the two things phase 9 refused.** `opus-rs` is a translation of libopus 1.6 that builds with cargo alone — no cmake, no C toolchain between a teammate and their first build — and it encodes a finished WAV, so it never touches the capture path no microphone has been through. What it costs instead is trust in a young crate, and that is not paid with a version pin: `decodes_back_to_the_signal_that_went_in` encodes a tone, demuxes the stream, decodes the packets and correlates the result against the input. A codec emitting plausible-looking packets of noise passes every other test in the file and fails that one.
+
+**The container is written by hand, for the reason the `.docx` was.** A `.opus` file is Opus packets in Ogg pages, and nothing else in the app needs a container — the same trade `zip.ts` took. Three details are where a hand-written Ogg goes wrong and all three are load-bearing: Ogg's CRC-32 is **not** the reflected one in ZIP and PNG, so reusing the existing table produces a file that is byte-perfect except for four bytes per page that every player rejects; a packet whose length is an exact multiple of 255 needs a trailing zero lacing value or the reader joins it to the next packet; and **every granule position in an Ogg Opus stream is in 48 kHz samples whatever the input rate**, so writing them at 16 kHz produces a file that plays at a third of its real duration and looks completely normal until you press play.
+
+**Trimming is granule arithmetic at both ends.** The encoder is fed `ceil((pre-skip + samples) / frame)` frames with the tail zero-padded, and the last page's granule is set to the real length rather than the padded one — which is the mechanism that removes the padding again. The head is trimmed by declaring the encoder's lookahead as pre-skip. That constant is 312 because libopus reports 6.5 ms and this is a translation of libopus, but the crate does not expose it, so it is *measured*: a test encodes silence-then-burst and fails if the burst comes back more than one frame out.
+
+**ffmpeg is what says it is an Opus file; our own demuxer only says the arithmetic is right.** Same rule as opening the generated `.docx` in Word. `ffprobe` reads the output as `ogg`/`opus`, mono, 24.7 kbps; `ffmpeg` decodes it back to a WAV of exactly the source duration, with the silence in the middle landing within 6 ms of where it was. And Chromium — the actual player — loads the blob to `readyState: 4` and advances `currentTime`, which is the check that matters because the `<audio>` element is what a coach presses play on.
+
+**Sharing is a button; nothing about a recording moves on a drain.** Every other row replicates automatically because a row is a few hundred bytes and a case you edited is a case you meant to back up. A recording is seven minutes of somebody's voice, and phase 9's rule that nothing identifying a person leaves unasked applies to it more than to anything else. `backfillQueue` therefore takes cases, sessions and comments and not audio: a first sign-in that pushed a season of speeches over tournament wifi would be a surprise and a bandwidth bill.
+
+**The local path and the bucket key are two columns, not one column that changes meaning.** `recording_path` is `C:\Users\<name>\…` and stays; `recording_object_path` is `<team_id>/<session_id>.opus` and is what `sessionToRemoteRow` sends. One column would mean the difference between the two is a convention somebody has to remember, and the thing being remembered is a person's name on the wire.
+
+**Comments go one way locally and the other way online, and the asymmetry is a foreign key.** Notes on *your own* speech are cached in SQLite — the session row is here, and a coach's advice should still be readable on the train. Notes on a *teammate's* speech are not cached at all: their session has no local row for `comments.session_id` to reference, and inventing a stub session so a coach's own note had somewhere to live would put a speech in their history that they never gave. So the coach comments online and the debater reads it offline, which is the way round it needs to work. A pull replaces only the rows marked remote, so a note typed on a train is pending rather than deleted.
+
+**The queue drains cases, then sessions, then comments** — the same foreign-key rule phase 9 wrote for the first two, now with a third table under it. `is_remote` exists solely to keep a pulled comment out of the queue: without it every drain is a round trip that changes nothing.
+
+**Two things driving the player found.** The comment list rendered in whatever order its source returned while the markers on the bar were sorted, so a note added mid-session sat at the bottom of the list with its marker in the right place — which reads as a bug in the marker. The list is sorted in the component now, beside the markers, rather than trusting a query's `ORDER BY`. And every element that encodes where the playhead is was checked for a transition: `transition-duration` is `0s` on the progress fill, the active-comment ring and the markers, with the only 0.15 s transition being `.btn`'s hover colours. That is the phase 5 rule applied before it could cost anything — a bar that animated to the current position would sit wherever it was when the window went behind something.
+
 ### Free-speech mode
 
 No script loaded: transcribe an opponent's speech, then optionally have Claude flow it into the rebuttal-table structure. Doubles as a live-flowing tool.
@@ -381,7 +403,9 @@ src-tauri/
   Cargo.toml
   src/main.rs, lib.rs
   src/whisper.rs           sidecar lifecycle, rolling-window worker, event emit
-  src/audio.rs             PCM buffer, WAV writer (Opus encode lands in phase 9)
+  src/audio.rs             PCM buffer, WAV writer, adaptive pause detection
+  src/ogg.rs               Ogg pages, lacing and Ogg's own CRC-32 (pure)
+  src/opus.rs              WAV -> Ogg Opus, and the recording's bytes over raw IPC
   src/coach.rs             Anthropic calls, keychain-backed key
   src/export.rs            extension-checked file write + `.dbcase` read
   src/sync.rs              the Supabase session, chunked across credential entries
@@ -408,6 +432,7 @@ src/
   sync/supabase.ts         client, anonymous auth, team functions, library queries
   sync/engine.ts           the drain: cases before sessions, failure per row
   sync/library.ts          browse online or cached, and copy a teammate's case
+  sync/recordings.ts       encode, share, fetch and take back down
   sync/provider.ts         Yjs over Realtime; y-webrtc LAN fallback (phase 11)
   hooks/useSync.ts         sign-in, teams, drain — one screen's worth of state
   coach/types.ts           CoachResult, DepthAxis, CoachPrompt — Layer B's contract
@@ -438,13 +463,16 @@ src/
   speech/fillers.ts        guarded filler lexicon (pure)
   speech/metrics.ts        word timeline, pace series, SessionMetrics (pure)
   speech/report.ts         skipped runs, section table, SpeechReport (pure)
+  speech/comments.ts       comment ordering, markers, the active one (pure)
   hooks/useSpeechReview.ts live report, small.en re-pass, session row
+  hooks/useRecording.ts    bytes -> blob URL, local or downloaded
+  hooks/useComments.ts     the thread, cached one way and online the other
   components/              CaseEditor, SectionView, TemplateTable, FieldEditor,
                            SectionNav, SeatPicker, PrepTimer, CompletenessMeter,
                            Library, DepthPanel, CoachPanel, PreemptList, TeamSetup,
                            ExportPanel, SpeechSheetView
   components/speech/       SpeechView, Teleprompter, SpeechTimer, LiveTranscript,
-                           SpeechReport, SessionHistory, Playback (phase 10)
+                           SpeechReport, SessionHistory, Playback
   export/zip.ts            CRC-32 + stored-entry ZIP writer, deterministic (pure)
   export/ooxml.ts          WordprocessingML fragments + the five package parts (pure)
   export/docx.ts           buildCaseDocx, buildSpeechSheetDocx (pure)
@@ -466,8 +494,8 @@ src/
 7. ~~Claude Layer B~~ — done
 8. ~~Export + `.docx` / `.dbcase`~~ — done
 9. ~~Supabase: schema, RLS, invite-code join, library sync~~ — done *(recording upload moved to 10, with the microphone it needs)*
-10. Coach comments on recordings, and the Opus upload they are anchored to ← **next**
-11. Live co-prep over Realtime, then the y-webrtc LAN fallback
+10. ~~Coach comments on recordings, and the Opus upload they are anchored to~~ — done
+11. Live co-prep over Realtime, then the y-webrtc LAN fallback ← **next**
 
 ---
 
@@ -610,7 +638,7 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
 
 ## Verification
 
-1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 820 tests across 38 files, alongside `cargo test` at 47.
+1. `npx vitest run` — every analyzer rule and every aligner case has unit tests. **Passing** at 863 tests across 40 files, alongside `cargo test` at 62.
 2. **Regression fixture from real work.** Seed the fake-news case from my friend's filled example (`reference/template-filled-example.docx`). It has genuine, checkable defects the analyzer must catch:
    - `subOverlap` flags Sub 1 ("fake news causes irreparable damage") against Sub 2 ("allowing the spread is supporting it") — they share most of their content vocabulary.
    - `vagueness` flags "damages lives", "individuals in society", "many damages".
@@ -656,6 +684,14 @@ Three of these land in phase 5, so they are worth writing *before* it rather tha
     Migration 5 adds `delete_team` — admin-only and explicit rather than automatic when the last member leaves, because a squad of one between tournaments is normal and a team that evaporates takes its invite code with it. It detaches rather than destroys: cases and sessions belong to the people who wrote them, so `team_id` goes null, and any case that was shared is set back to `private`. It refuses while the team still has recordings, since an object under a deleted team fails every storage policy and becomes both unplayable and undeletable.
 
     **Fixing it opened a second hole immediately**, which is the part worth keeping. Admin-only means `is_team_admin`, which reads a membership row — so a team whose last admin *left* still could not be deleted by anyone, and Leave sits next to Delete in the same panel. The invariant is now "every team has at least one admin", enforced by `team_members_keep_an_admin` on the way out rather than repaired afterwards. It is a prompt and not a trap, because an admin can promote anyone first. The subtlety is that `delete_team` cascades into the very rows the trigger guards, so it returns early when the parent team is already gone — without that check, deleting a team would raise the error the trigger exists to give.
-13. **Recording round-trip** — record a speech, confirm the Opus upload is roughly a tenth the WAV's size, then play it back on a second machine and leave a comment at a timestamp that appears on the first. **Moved into phase 10.** The bucket and its policies ship with phase 9; the Opus encode does not, because both ways of adding it are wrong until there is a working microphone — see the note at the end of the Supabase section.
+13. **Recording round-trip** — record a speech, confirm the Opus upload is roughly a tenth the WAV's size, then play it back on a second machine and leave a comment at a timestamp that appears on the first. **Built, and everything except the second machine and the microphone is proved.**
+
+    - **A tenth is measured, not claimed.** 12.34 s of 16 kHz mono WAV is 394,924 bytes and its Opus copy is 38,152 — a ratio of 0.097. A `cargo test` asserts the ratio stays under 0.15 on thirty seconds of tone so a bitrate change cannot quietly undo it.
+    - **Three readers agree the file is an Opus file.** Our own demuxer recovers every packet and checks every page CRC; `ffprobe` reports `ogg` / `opus`, mono, 24.7 kbps; `ffmpeg` decodes it to a WAV of *exactly* the source duration — 12.340000 against 12.340000, which is both trims working — with the 1.5 s silence in the middle landing 5.8 ms from where it went in. That last number is the pre-skip constant being right.
+    - **Chromium plays it**, which is the reader that actually matters, because the player is an `<audio>` element. A blob of the generated file reaches `readyState: 4`, reports 12.3465 s (granule including pre-skip — a player's duration does not subtract it, though its decode does), and `currentTime` advances 0.798 s over 900 ms of playing.
+    - **The player was driven rather than looked at.** The progress fill's rendered width is 352.73 px of a 670 px bar at 6.5 s of 12.3465 — 0.5265 against 0.5265. The three comment markers sit at 66.96 / 334.82 / 669.64 px against an arithmetic 66.96 / 334.80 / 669.60. Seeking to 6.5 s highlights the note left at 6.17 s and not the one at 1.23 s. A comment of whitespace is refused before it is written, as the Postgres check constraint would refuse it hours later. Add and delete both round-trip through the real hooks.
+    - **The comment policies were already right and are now proved from both ends.** Phase 9 tested a coach writing a note and an outsider being unable to read it; phase 10 adds that the debater whose speech it is *can* read it, *cannot* delete it — a hidden button is not an access control, and advice you can delete is advice you can ignore quietly — and that the coach can delete their own.
+
+    **Still open**: no second machine, and still no microphone. Every recording that has been through this is a generated tone, and the round trip has run against one install. What only two installs can settle is the part of the sentence after "and": a comment left on a teammate's speech reaching the person who gave it. Everything under it is proved — the storage policies against a real Postgres and a hosted project, the comment policies both ways, the upload path itself — but the wire has not carried an actual speech.
 14. **Co-prep test** — two instances edit different fields of one case simultaneously; confirm convergence with no lost text. Pull one machine off the network mid-edit and confirm it reconciles on rejoin. Then kill internet on both and confirm the LAN fallback still merges.
 15. **Conventions hold** — `npm run lint` and `cargo clippy -- -D warnings` both pass with the docstring rules on. Then delete a docstring and a param description and confirm CI actually fails, so the rule isn't quietly disabled.
