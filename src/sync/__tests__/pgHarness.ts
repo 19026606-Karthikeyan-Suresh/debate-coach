@@ -88,6 +88,34 @@ $$;
 grant usage on schema storage to anon, authenticated;
 grant select, insert, update, delete on storage.objects to authenticated;
 grant select on storage.buckets to authenticated;
+
+-- Realtime supplies both of these on a real project. \`messages\` is the table every broadcast
+-- on a private channel is checked against, and \`topic()\` is how a policy asks which channel is
+-- being joined — it reads a GUC the Realtime server sets per request, which is why a test can
+-- set it directly and get the same answer the server would.
+create schema if not exists realtime;
+
+create table realtime.messages (
+    id         bigserial primary key,
+    topic      text not null,
+    extension  text not null default 'broadcast',
+    payload    jsonb,
+    private    boolean not null default true,
+    inserted_at timestamptz not null default now()
+);
+
+alter table realtime.messages enable row level security;
+
+create or replace function realtime.topic() returns text
+language sql stable
+as $$
+    select nullif(current_setting('realtime.topic', true), '');
+$$;
+
+grant usage on schema realtime to anon, authenticated;
+grant select, insert on realtime.messages to authenticated;
+grant usage, select on sequence realtime.messages_id_seq to authenticated;
+grant execute on function realtime.topic() to anon, authenticated;
 `
 
 /** A running database, with the migrations applied and an identity that can be swapped. */

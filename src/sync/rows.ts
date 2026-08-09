@@ -311,3 +311,49 @@ export function remoteRowToTeamCase(row: RemoteLibraryRow, ownerName: string): T
     updatedAt: row.updated_at,
   }
 }
+
+// ---------------------------------------------------------------------------
+// The Yjs snapshot — `cases.ydoc_state`
+// ---------------------------------------------------------------------------
+
+/**
+ * Encodes a Yjs update for the `bytea` column.
+ *
+ * PostgREST takes and returns `bytea` as Postgres' hex format — a `\x` marker then two lowercase
+ * hex digits per byte — rather than as base64, which is what everything else on the wire uses.
+ * Getting this wrong does not fail: it stores the *text* of the base64 and reads back a snapshot
+ * Yjs rejects, hours later, on somebody else's machine.
+ *
+ * @param bytes - From `Y.encodeStateAsUpdate`.
+ * @returns The literal to send.
+ */
+export function bytesToPgHex(bytes: Uint8Array): string {
+  let hex = ''
+  for (const byte of bytes) {
+    hex += byte.toString(16).padStart(2, '0')
+  }
+  return `\\x${hex}`
+}
+
+/**
+ * Decodes what {@link bytesToPgHex} wrote.
+ *
+ * @param literal - As PostgREST returns it. Null, empty, and anything not in hex format all come
+ *   back as null: a snapshot that will not parse means the late joiner waits for a peer, which is
+ *   the same state as no snapshot at all and is recoverable.
+ * @returns The bytes, or null.
+ */
+export function pgHexToBytes(literal: string | null): Uint8Array | null {
+  if (literal === null || !literal.startsWith('\\x') || literal.length % 2 !== 0) {
+    return null
+  }
+  const digits = literal.slice(2)
+  if (digits.length === 0 || !/^[0-9a-fA-F]*$/.test(digits)) {
+    return null
+  }
+  const bytes = new Uint8Array(digits.length / 2)
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(digits.slice(index * 2, index * 2 + 2), 16)
+  }
+  return bytes
+}

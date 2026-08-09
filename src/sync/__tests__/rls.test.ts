@@ -689,6 +689,136 @@ describe('a team always has an admin', () => {
   })
 })
 
+describe('a co-prep room', () => {
+  /** Points the session at a channel, the way the Realtime server does per request. */
+  async function inRoom(topic: string): Promise<void> {
+    await harness.query('select set_config($1, $2, false)', ['realtime.topic', topic])
+  }
+
+  /** Whether the signed-in identity may be in a room, as the policy asks it. */
+  async function mayJoin(topic: string): Promise<boolean> {
+    const rows = await harness.query<{ can_join_case_room: boolean }>(
+      'select public.can_join_case_room($1)',
+      [topic],
+    )
+    return rows[0]?.can_join_case_room ?? false
+  }
+
+  it('opens for the owner and for a teammate the case is shared with', async () => {
+    await harness.asUser(ALICE)
+    expect(await mayJoin(`case:${NORTHSIDE_CASE}`)).toBe(true)
+    expect(await mayJoin(`case:${ALICE_PRIVATE_CASE}`)).toBe(true)
+
+    await harness.asUser(BOB)
+    expect(await mayJoin(`case:${NORTHSIDE_CASE}`)).toBe(true)
+  })
+
+  it('is closed to a teammate on a private case, and to the other team entirely', async () => {
+    // A private case has a room of one. This is the first thing anyone hits, so the panel says
+    // it in those words rather than reporting a channel error.
+    await harness.asUser(BOB)
+    expect(await mayJoin(`case:${ALICE_PRIVATE_CASE}`)).toBe(false)
+
+    await harness.asUser(CAROL)
+    expect(await mayJoin(`case:${NORTHSIDE_CASE}`)).toBe(false)
+    expect(await mayJoin(`case:${ALICE_PRIVATE_CASE}`)).toBe(false)
+
+    // And the other direction, so this is not a policy that simply denies everything.
+    expect(await mayJoin(`case:${SOUTHSIDE_CASE}`)).toBe(true)
+  })
+
+  it('denies a malformed topic rather than raising out of a policy', async () => {
+    // The trap `storage_team_id` already documents: a cast error inside a policy is a 500, and
+    // nothing anywhere records it as an access denial.
+    await harness.asUser(ALICE)
+    for (const topic of [
+      'case:not-a-uuid',
+      'case:------------------------------------',
+      `case:${NORTHSIDE_CASE}extra`,
+      `CASE:${NORTHSIDE_CASE}`,
+      'lobby',
+      '',
+    ]) {
+      const message = await errorFrom(() => mayJoin(topic))
+      expect(message, `topic ${topic} should be denied, not raised`).toBeNull()
+      expect(await mayJoin(topic), `topic ${topic} must not open a room`).toBe(false)
+    }
+
+    // A well-formed topic for a case that is not there is a denial too, not an error.
+    expect(await mayJoin('case:99999999-9999-4999-8999-999999999999')).toBe(false)
+  })
+
+  it('lets a teammate broadcast into the room and refuses the other team', async () => {
+    await harness.asUser(BOB)
+    await inRoom(`case:${NORTHSIDE_CASE}`)
+    const allowed = await errorFrom(() =>
+      harness.query(
+        `insert into realtime.messages (topic, extension, payload)
+         values (realtime.topic(), 'broadcast', '{"kind":"presence"}'::jsonb)`,
+      ),
+    )
+    expect(allowed).toBeNull()
+
+    await harness.asUser(CAROL)
+    await inRoom(`case:${NORTHSIDE_CASE}`)
+    const refused = await errorFrom(() =>
+      harness.query(
+        `insert into realtime.messages (topic, extension, payload)
+         values (realtime.topic(), 'broadcast', '{"kind":"update"}'::jsonb)`,
+      ),
+    )
+    expect(refused).toContain('row-level security')
+  })
+
+  it('lets a teammate receive from the room and shows the other team nothing', async () => {
+    await harness.asPostgres()
+    await harness.query(
+      `insert into realtime.messages (topic, extension, payload)
+       values ($1, 'broadcast', '{"kind":"update"}'::jsonb)`,
+      [`case:${NORTHSIDE_CASE}`],
+    )
+
+    await harness.asUser(BOB)
+    await inRoom(`case:${NORTHSIDE_CASE}`)
+    const received = await harness.query<{ count: string }>(
+      'select count(*)::text as count from realtime.messages where topic = $1',
+      [`case:${NORTHSIDE_CASE}`],
+    )
+    expect(Number(received[0]?.count)).toBeGreaterThan(0)
+
+    // A failed `using` clause is an empty read rather than an error, which is why this is
+    // counted rather than caught.
+    await harness.asUser(CAROL)
+    await inRoom(`case:${NORTHSIDE_CASE}`)
+    const denied = await harness.query<{ count: string }>(
+      'select count(*)::text as count from realtime.messages where topic = $1',
+      [`case:${NORTHSIDE_CASE}`],
+    )
+    expect(Number(denied[0]?.count)).toBe(0)
+  })
+
+  it('closes the room when the case stops being shared', async () => {
+    // Un-sharing a case has to eject the room, not only hide the library entry — otherwise
+    // "make this private again" leaves a live feed of it open to the squad.
+    await harness.asUser(ALICE)
+    await harness.query('update public.cases set visibility = $1 where id = $2', [
+      'private',
+      NORTHSIDE_CASE,
+    ])
+
+    await harness.asUser(BOB)
+    expect(await mayJoin(`case:${NORTHSIDE_CASE}`)).toBe(false)
+
+    await harness.asUser(ALICE)
+    await harness.query('update public.cases set visibility = $1 where id = $2', [
+      'team',
+      NORTHSIDE_CASE,
+    ])
+    await harness.asUser(BOB)
+    expect(await mayJoin(`case:${NORTHSIDE_CASE}`)).toBe(true)
+  })
+})
+
 describe('rotating the invite code', () => {
   it('is refused to a member who is not an admin', async () => {
     await harness.asUser(BOB)

@@ -2,7 +2,8 @@
 //!
 //! Phase 1 wired the window and the local database; phase 5 added audio capture and the whisper
 //! sidecar; phase 6 added the post-speech pass the report is built from; phase 7 the Anthropic
-//! proxy; phase 8 the export path; phase 9 the Supabase session the team layer signs in with.
+//! proxy; phase 8 the export path; phase 9 the Supabase session the team layer signs in with;
+//! phase 11 the LAN relay co-prep falls back to when the room has no internet.
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
@@ -11,6 +12,7 @@ pub mod audio;
 pub mod coach;
 pub mod db;
 pub mod export;
+pub mod lan;
 pub mod ogg;
 pub mod opus;
 pub mod sync;
@@ -33,6 +35,9 @@ pub fn run() {
         // One recording slot for the whole app. A second speech cannot start while one is open,
         // which is enforced here by there being nowhere to put it.
         .manage(whisper::SpeechState::default())
+        // One co-prep room at a time, for the same reason: a second relay on one install would
+        // fan the same document into two rooms.
+        .manage(lan::LanState::default())
         .invoke_handler(tauri::generate_handler![
             whisper::whisper_status,
             whisper::start_speech_session,
@@ -54,6 +59,12 @@ pub fn run() {
             sync::sync_session_set,
             sync::sync_session_clear,
             sync::sync_identity_status,
+            lan::lan_host,
+            lan::lan_discover,
+            lan::lan_connect,
+            lan::lan_send,
+            lan::lan_leave,
+            lan::lan_status,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
