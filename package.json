@@ -20,6 +20,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.112.2",
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-dialog": "2.7.2",
     "@tauri-apps/plugin-sql": "2.4.0",
@@ -28,6 +29,7 @@
     "yjs": "13.6.32"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.4",
     "@eslint/js": "10.0.1",
     "@tailwindcss/vite": "4.3.3",
     "@tauri-apps/cli": "2.11.4",

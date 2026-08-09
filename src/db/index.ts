@@ -6,30 +6,15 @@
  * search; `saveCase` rewrites them from the document so they cannot drift.
  */
 
-import Database from '@tauri-apps/plugin-sql'
-
 import type { FormatId, Side } from '../formats/index.ts'
 import type { SessionMetrics } from '../speech/metrics.ts'
 import type { SpeechReport } from '../speech/report.ts'
+import { enqueueChange } from '../sync/store.ts'
 import type { Case, Visibility } from '../types/case.ts'
 import { hydrateCase } from '../types/createCase.ts'
+import { getDatabase } from './connection.ts'
 
-/** Must match `DB_URL` in `src-tauri/src/db.rs`; the Rust side owns the migrations. */
-const DB_URL = 'sqlite:debate-coach.db'
-
-// Opening the same URL twice returns two handles to one file, which works but wastes a
-// connection per call site. One shared promise keeps it to a single pool.
-let databaseHandle: Promise<Database> | null = null
-
-/**
- * Opens the local database, running any pending migrations on first call.
- *
- * @returns The shared connection. Subsequent calls reuse it.
- */
-export function getDatabase(): Promise<Database> {
-  databaseHandle ??= Database.load(DB_URL)
-  return databaseHandle
-}
+export { getDatabase } from './connection.ts'
 
 /** One row of the case list — enough to render the library without parsing every document. */
 export interface CaseSummary {
@@ -88,6 +73,10 @@ export async function saveCase(caseFile: Case): Promise<void> {
       caseFile.updatedAt,
     ],
   )
+  // Queued whether or not a project is configured. The queue is a set of dirty rows, so a case
+  // edited all week is one entry — and turning the team layer on mid-season then pushes the
+  // season rather than only what happens next.
+  await enqueueChange('cases', caseFile.id, 'upsert')
 }
 
 /**
@@ -156,6 +145,7 @@ export async function listCaseIds(): Promise<string[]> {
 export async function deleteCase(caseId: string): Promise<void> {
   const database = await getDatabase()
   await database.execute('DELETE FROM cases WHERE id = $1', [caseId])
+  await enqueueChange('cases', caseId, 'delete')
 }
 
 /**
@@ -234,6 +224,9 @@ export async function saveSession(
       JSON.stringify(report),
     ],
   )
+  // Called twice per speech — live then review — and both land on one queue entry, so the row
+  // that actually uploads is the `small.en` one whenever the re-pass finished before the drain.
+  await enqueueChange('sessions', report.sessionId, 'upsert')
 }
 
 /**
@@ -320,4 +313,5 @@ export async function loadSessionReport(sessionId: string): Promise<SpeechReport
 export async function deleteSession(sessionId: string): Promise<void> {
   const database = await getDatabase()
   await database.execute('DELETE FROM sessions WHERE id = $1', [sessionId])
+  await enqueueChange('sessions', sessionId, 'delete')
 }

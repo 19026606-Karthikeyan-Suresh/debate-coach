@@ -12,7 +12,10 @@ import type { FormatId } from '../formats/index.ts'
 import { FORMATS, getFormat } from '../formats/index.ts'
 import { deleteCase, listCaseIds, listCases, saveCase, type CaseSummary } from '../db/index.ts'
 import { importCaseFile } from '../export/index.ts'
+import { useSync } from '../hooks/useSync.ts'
 import { createEmptyCase } from '../types/createCase.ts'
+import { TeamLibrary } from './TeamLibrary.tsx'
+import { TeamSetup } from './TeamSetup.tsx'
 
 /** Props for {@link Library}. */
 export interface LibraryProps {
@@ -36,6 +39,9 @@ export function Library({ onOpen, onReview }: LibraryProps): React.JSX.Element {
   // What the last import did. Which of the two outcomes it was is the whole point of saying so:
   // "restored" replaced nothing, "copied" means the original is still in the list above it.
   const [notice, setNotice] = useState<string | null>(null)
+  // Held by the screen rather than by the panel, so a sign-in survives the panel re-rendering
+  // and the team library can read the same active team the panel is setting.
+  const sync = useSync()
   const [newFormat, setNewFormat] = useState<FormatId>('AP')
   const [newRoleId, setNewRoleId] = useState<string>(FORMATS.AP.roles[0]?.id ?? '')
 
@@ -122,7 +128,11 @@ export function Library({ onOpen, onReview }: LibraryProps): React.JSX.Element {
         <div>
           <h1 className="text-2xl font-semibold">Debate Coach</h1>
           <p className="text-sm text-neutral-500 dark:text-neutral-400">
-            Cases are stored on this machine. Nothing leaves it yet.
+            {/* Was "nothing leaves it yet" until phase 9, and saying that once it is no longer
+                true is worse than saying nothing. */}
+            {sync.activeTeamId === null
+              ? 'Cases are stored on this machine. Nothing leaves it.'
+              : 'Stored on this machine, and shared with your team when you mark a case shared.'}
           </p>
         </div>
         <button type="button" className="btn" onClick={onReview}>
@@ -199,8 +209,10 @@ export function Library({ onOpen, onReview }: LibraryProps): React.JSX.Element {
         </p>
       )}
 
+      <TeamSetup sync={sync} />
+
       <section className="flex flex-col gap-2">
-        <h2 className="section-heading">Cases ({cases.length})</h2>
+        <h2 className="section-heading">My cases ({cases.length})</h2>
         {cases.length === 0 && !error && (
           <p className="text-sm text-neutral-500 dark:text-neutral-400">
             No cases yet. Make one above.
@@ -243,6 +255,17 @@ export function Library({ onOpen, onReview }: LibraryProps): React.JSX.Element {
           ))}
         </ul>
       </section>
+
+      {sync.activeTeamId !== null && (
+        <TeamLibrary
+          teamId={sync.activeTeamId}
+          userId={sync.userId}
+          onOpen={onOpen}
+          onImported={() => {
+            void refresh()
+          }}
+        />
+      )}
     </main>
   )
 }

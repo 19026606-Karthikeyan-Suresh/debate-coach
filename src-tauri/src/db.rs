@@ -30,6 +30,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: SESSION_REPORT,
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 3,
+            description: "settings, cached team library, and a dedupable sync queue",
+            sql: SYNC_STATE,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -137,4 +143,45 @@ CREATE INDEX IF NOT EXISTS idx_sync_queue_queued_at ON sync_queue(queued_at);
 // `SELECT *` on `sessions` is never used, so an added column cannot surprise a reader of a row.
 const SESSION_REPORT: &str = r#"
 ALTER TABLE sessions ADD COLUMN report TEXT;
+"#;
+
+// What phase 9 needs locally, which is three separate things.
+//
+// `app_settings` holds the small facts sync needs across launches: which team is active, which
+// `auth.uid()` this install signed in as, and when the library was last pulled. A key-value table
+// rather than columns because every one of them is a single row and adding the next one should
+// not be a migration.
+//
+// `team_library` is the cached listing of teammates' shared cases, kept apart from `cases` on
+// purpose. Folding them in would make `listCases` return work this install cannot edit — RLS
+// says only the owner writes a case — and would mean downloading every teammate's whole document
+// to draw a list. The summary is enough to browse and search offline; the document is fetched
+// only when someone imports one.
+//
+// The unique index turns `sync_queue` into a set of dirty rows rather than a log. A case edited
+// forty times on a train pushes once, with its final text, because the queue holds the id and the
+// payload is re-read at drain time. `payload` therefore stays null and is the one column of the
+// phase 1 schema that nothing writes.
+const SYNC_STATE: &str = r#"
+CREATE TABLE IF NOT EXISTS app_settings (
+    key               TEXT PRIMARY KEY NOT NULL,
+    value             TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS team_library (
+    id                TEXT PRIMARY KEY NOT NULL,
+    team_id           TEXT NOT NULL,
+    owner_id          TEXT NOT NULL,
+    owner_name        TEXT NOT NULL DEFAULT '',
+    motion            TEXT NOT NULL DEFAULT '',
+    format            TEXT NOT NULL,
+    side              TEXT NOT NULL,
+    position          TEXT NOT NULL DEFAULT '',
+    updated_at        TEXT NOT NULL,
+    cached_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_library_updated ON team_library(updated_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_queue_row ON sync_queue(table_name, row_id);
 "#;
