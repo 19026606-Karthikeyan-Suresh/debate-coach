@@ -1,11 +1,14 @@
 /**
  * Draining the queue: the one place the local database and the project actually meet.
  *
- * **Cases go up before sessions, always.** `sessions.case_id` is a foreign key, so a speech
- * pushed ahead of the case it was given from is rejected by Postgres — and the queue is ordered
- * by when a row was touched, which says nothing about that. The order is fixed here instead, and
- * a session whose case is not going up in this run has its link dropped rather than the whole
- * row lost.
+ * **Cases go up before sessions, and sessions before comments, always.** `sessions.case_id` and
+ * `comments.session_id` are both foreign keys, so a row pushed ahead of the one it points at is
+ * rejected by Postgres — and the queue is ordered by when a row was touched, which says nothing
+ * about that. The order is fixed here instead, and a session whose case is not going up in this
+ * run has its link dropped rather than the whole row lost.
+ *
+ * **Nothing here uploads audio.** A drain moves rows; a recording moves when the debater presses
+ * Share, and `recordings.ts` is where that lives.
  *
  * **A failure is per row, not per run.** One case Postgres refuses must not stop the other
  * thirty-nine; each entry records its own error and backs off on its own schedule, and the run
@@ -15,8 +18,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-import { listSessions, loadCase } from '../db/index.ts'
-import { caseToRemoteRow, sessionToRemoteRow } from './rows.ts'
+import { listSessions, loadCase, loadComment } from '../db/index.ts'
+import { caseToRemoteRow, commentToRemoteRow, sessionToRemoteRow } from './rows.ts'
 import {
   MAX_SYNC_ATTEMPTS,
   backfillQueue,
@@ -35,6 +38,7 @@ import {
   ensureSignedIn,
   getSupabase,
   pushCase,
+  pushComment,
   pushSession,
 } from './supabase.ts'
 
@@ -63,11 +67,18 @@ const DISABLED: SyncOutcome = {
   error: null,
 }
 
-/** Cases first. Within a table, oldest first, which is the order they were touched in. */
+/** Foreign-key order: a row goes up after the row it points at. */
+const TABLE_ORDER: Readonly<Record<QueueEntry['table'], number>> = {
+  cases: 0,
+  sessions: 1,
+  comments: 2,
+}
+
+/** Parents first. Within a table, oldest first, which is the order they were touched in. */
 function drainOrder(entries: readonly QueueEntry[]): QueueEntry[] {
   return [...entries].sort((left, right) => {
     if (left.table !== right.table) {
-      return left.table === 'cases' ? -1 : 1
+      return TABLE_ORDER[left.table] - TABLE_ORDER[right.table]
     }
     return left.queuedAt.localeCompare(right.queuedAt)
   })
@@ -130,6 +141,26 @@ async function drainSession(
   await pushSession(client, sessionToRemoteRow(session, userId, teamId, hasCase))
 }
 
+/** Pushes one coach comment, or deletes it. */
+async function drainComment(
+  client: SupabaseClient,
+  entry: QueueEntry,
+  userId: string,
+): Promise<void> {
+  if (entry.operation === 'delete') {
+    await deleteRemoteRow(client, 'comments', entry.rowId)
+    return
+  }
+
+  const comment = await loadComment(entry.rowId)
+  // Queued as a note, gone by the time it drained. The intent that survives is a delete.
+  if (!comment) {
+    await deleteRemoteRow(client, 'comments', entry.rowId)
+    return
+  }
+  await pushComment(client, commentToRemoteRow(comment, userId))
+}
+
 /**
  * Pushes everything that is due.
  *
@@ -187,8 +218,10 @@ export async function runSync(now: Date = new Date()): Promise<SyncOutcome> {
     try {
       if (entry.table === 'cases') {
         await drainCase(client, entry, userId, teamId)
-      } else {
+      } else if (entry.table === 'sessions') {
         await drainSession(client, entry, userId, teamId)
+      } else {
+        await drainComment(client, entry, userId)
       }
       await clearQueued(entry.id)
       pushed += 1

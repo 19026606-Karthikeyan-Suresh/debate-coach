@@ -9,14 +9,29 @@ import { describe, expect, it } from 'vitest'
 
 import { buildFilledExampleCase } from '../../analysis/__tests__/fixture.ts'
 import type { SessionSummary } from '../../db/index.ts'
+import type { SpeechComment } from '../../speech/comments.ts'
 import { summariseSession } from '../../speech/metrics.ts'
-import { caseToRemoteRow, remoteRowToCase, remoteRowToTeamCase, sessionToRemoteRow } from '../rows.ts'
+import {
+  caseToRemoteRow,
+  commentToRemoteRow,
+  recordingObjectKey,
+  remoteRowToCase,
+  remoteRowToComment,
+  remoteRowToTeamCase,
+  remoteRowToTeamSession,
+  sessionToRemoteRow,
+} from '../rows.ts'
 
 const ALICE = '11111111-1111-4111-8111-111111111111'
 const TEAM = 'aaaaaaaa-0000-4000-8000-00000000aaaa'
 
-/** A session as `listSessions` returns it, including a local recording path. */
-function buildSession(): SessionSummary {
+/**
+ * A session as `listSessions` returns it, including a local recording path.
+ *
+ * @param overrides - Fields to change. Used to give the session a shared recording without
+ *   restating the whole row.
+ */
+function buildSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
     id: 'ssssssss-0000-4000-8000-000000000001',
     caseId: 'filled-example',
@@ -39,7 +54,9 @@ function buildSession(): SessionSummary {
       isAccurate: true,
     }),
     recordingPath: 'C:\\Users\\karti\\AppData\\Roaming\\com.kartixc.debatecoach\\speech.wav',
+    recordingObjectPath: null,
     createdAt: '2026-08-01T10:00:00.000Z',
+    ...overrides,
   }
 }
 
@@ -93,9 +110,18 @@ describe('caseToRemoteRow', () => {
 
 describe('sessionToRemoteRow', () => {
   it('never uploads the local recording path', () => {
-    // It is a path on one machine, and the middle of it is a person's name.
+    // It is a path on one machine, and the middle of it is a person's name. A session with a WAV
+    // on disk and nothing in the bucket pushes a null, not the WAV.
     const row = sessionToRemoteRow(buildSession(), ALICE, TEAM, true)
     expect(row.recording_path).toBeNull()
+  })
+
+  it('uploads the bucket key once the speech has been shared', () => {
+    const shared = buildSession({ recordingObjectPath: `${TEAM}/ssssssss-0000-4000-8000-000000000001.opus` })
+    const row = sessionToRemoteRow(shared, ALICE, TEAM, true)
+    expect(row.recording_path).toBe(`${TEAM}/ssssssss-0000-4000-8000-000000000001.opus`)
+    // Still not the local path, which is the whole reason the two are separate columns.
+    expect(row.recording_path).not.toContain('Users')
   })
 
   it('uploads the metrics and nothing behind them', () => {
@@ -144,5 +170,87 @@ describe('remoteRowToTeamCase', () => {
   it('still lists a case whose owner has no name', () => {
     // A teammate who joined without typing one, or a membership row that did not come back.
     expect(remoteRowToTeamCase(row, '')).toMatchObject({ ownerName: '', motion: row.motion })
+  })
+})
+
+describe('recordingObjectKey', () => {
+  it('puts the team first, because the storage policy reads it out of the path', () => {
+    // `storage.objects` carries a bucket, a name and an owner. The only way a policy can ask
+    // "is this recording a teammate's" is the first path segment, which makes this a security
+    // boundary rather than a filing convention.
+    expect(recordingObjectKey(TEAM, 'session-9')).toBe(`${TEAM}/session-9.opus`)
+  })
+})
+
+describe('commentToRemoteRow', () => {
+  const comment: SpeechComment = {
+    id: 'dddddddd-0000-4000-8000-000000000001',
+    sessionId: 'ssssssss-0000-4000-8000-000000000001',
+    authorId: ALICE,
+    authorName: 'Alice',
+    atSeconds: 252,
+    body: 'this rebuttal was rushed',
+    createdAt: '2026-08-02T09:00:00.000Z',
+    isRemote: false,
+  }
+
+  it('keeps the author it already had', () => {
+    expect(commentToRemoteRow(comment, 'someone-else').author_id).toBe(ALICE)
+  })
+
+  it('stamps the signed-in identity on a note written before this install signed in', () => {
+    // `comments_insert` requires `author_id = auth.uid()`. A null here is rejected by the policy,
+    // which arrives at drain time as a row that never lands.
+    const offline = { ...comment, authorId: null }
+    expect(commentToRemoteRow(offline, ALICE).author_id).toBe(ALICE)
+  })
+
+  it('sends no display name', () => {
+    // The name is denormalised locally so a comment reads offline. Postgres resolves it from the
+    // roster, and a second copy on the wire is a second thing that can be wrong.
+    expect(Object.keys(commentToRemoteRow(comment, ALICE))).not.toContain('author_name')
+  })
+
+  it('round-trips through the download path', () => {
+    const round = remoteRowToComment(commentToRemoteRow(comment, ALICE), 'Alice')
+    expect(round).toEqual({ ...comment, isRemote: true })
+  })
+
+  it('marks a downloaded comment remote so a pull does not push it back', () => {
+    expect(remoteRowToComment(commentToRemoteRow(comment, ALICE), '').isRemote).toBe(true)
+  })
+})
+
+describe('remoteRowToTeamSession', () => {
+  const row = {
+    id: 'ssssssss-0000-4000-8000-000000000002',
+    user_id: ALICE,
+    format: 'BP' as const,
+    role: 'bp-mg',
+    duration_s: 420,
+    recording_path: `${TEAM}/ssssssss-0000-4000-8000-000000000002.opus`,
+    created_at: '2026-08-02T09:00:00.000Z',
+    cases: { motion: 'THW ban targeted advertising' },
+  }
+
+  it('reads the motion off the embedded case', () => {
+    expect(remoteRowToTeamSession(row, 'Alice').motion).toBe('THW ban targeted advertising')
+  })
+
+  it('reads it whichever shape PostgREST returned the embed in', () => {
+    // A to-one embed comes back as an object or as a single-element array depending on when the
+    // schema cache was last reloaded, not on the schema. `myTeams` carries the same branch.
+    const asArray = { ...row, cases: [{ motion: 'THW ban targeted advertising' }] }
+    expect(remoteRowToTeamSession(asArray, 'Alice').motion).toBe(row.cases.motion)
+  })
+
+  it('lists a speech whose case was never shared', () => {
+    // A session is not a case: a debater can share the recording and keep the prep private, and
+    // the listing has to survive that rather than dropping the row.
+    const noCase = { ...row, cases: null }
+    expect(remoteRowToTeamSession(noCase, 'Alice')).toMatchObject({
+      motion: '',
+      recordingPath: row.recording_path,
+    })
   })
 })

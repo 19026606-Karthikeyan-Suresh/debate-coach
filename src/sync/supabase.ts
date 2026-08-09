@@ -17,15 +17,24 @@ import { createClient, type SupabaseClient, type SupportedStorage } from '@supab
 import { invoke } from '@tauri-apps/api/core'
 
 import type { Case } from '../types/case.ts'
+import type { SpeechComment } from '../speech/comments.ts'
 import { supabaseConfig } from './config.ts'
 import {
   remoteRowToCase,
+  remoteRowToComment,
   remoteRowToTeamCase,
+  remoteRowToTeamSession,
   type RemoteCaseRow,
+  type RemoteCommentRow,
   type RemoteLibraryRow,
   type RemoteSessionRow,
+  type RemoteTeamSessionRow,
   type TeamCaseSummary,
+  type TeamSessionSummary,
 } from './rows.ts'
+
+/** The bucket recordings live in. Private; every read goes through a policy. */
+export const RECORDINGS_BUCKET = 'recordings'
 
 /** Whether the Tauri IPC exists. False in a browser, which is how the UI is driven in dev. */
 function hasTauri(): boolean {
@@ -344,14 +353,14 @@ export async function pushSession(client: SupabaseClient, row: RemoteSessionRow)
  * Deletes a row that was deleted locally.
  *
  * @param client - The client.
- * @param table - `cases` or `sessions`.
+ * @param table - `cases`, `sessions` or `comments`.
  * @param rowId - Primary key. Deleting a row that is not there succeeds — RLS makes "not yours"
  *   and "not there" the same answer, and both mean the intent is already satisfied.
  * @throws If the delete errors for any other reason.
  */
 export async function deleteRemoteRow(
   client: SupabaseClient,
-  table: 'cases' | 'sessions',
+  table: 'cases' | 'sessions' | 'comments',
   rowId: string,
 ): Promise<void> {
   const { error } = await client.from(table).delete().eq('id', rowId)
@@ -447,6 +456,206 @@ export async function searchRemoteCases(
   const names = await memberNames(client, teamId)
   return (data as RemoteLibraryRow[]).map((row) =>
     remoteRowToTeamCase(row, names.get(row.owner_id) ?? ''),
+  )
+}
+
+/**
+ * Uploads a speech's Opus copy.
+ *
+ * `upsert` is on: re-sharing a speech replaces the object rather than failing, which is what
+ * somebody who re-recorded expects. The insert policy checks the team in the path and that the
+ * owner is the caller, so a key built for another team comes back as a policy violation rather
+ * than landing somewhere a teammate can read.
+ *
+ * @param client - The client.
+ * @param objectKey - From `recordingObjectKey`. The first segment must be a team this identity is
+ *   in; anything else is refused by the policy, including a key with no uuid in it at all.
+ * @param bytes - The `.opus` file, whole. Not streamed: a seven-minute speech is about 1.2 MB,
+ *   which is one request.
+ * @throws If the upload is rejected.
+ */
+export async function uploadRecording(
+  client: SupabaseClient,
+  objectKey: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  const { error } = await client.storage
+    .from(RECORDINGS_BUCKET)
+    .upload(objectKey, new Blob([bytes as BlobPart], { type: 'audio/ogg' }), {
+      contentType: 'audio/ogg',
+      upsert: true,
+    })
+  if (error) {
+    fail('could not upload the recording', error.message)
+  }
+}
+
+/**
+ * Downloads a teammate's recording.
+ *
+ * @param client - The client.
+ * @param objectKey - As stored on the session row.
+ * @returns The file's bytes.
+ * @throws If the object is missing or this identity may not read it. Those two are deliberately
+ *   the same message from the server — a 403 would confirm the file exists — so the error here
+ *   says both.
+ */
+export async function downloadRecording(
+  client: SupabaseClient,
+  objectKey: string,
+): Promise<Uint8Array> {
+  const { data, error } = await client.storage.from(RECORDINGS_BUCKET).download(objectKey)
+  if (error || !data) {
+    fail(
+      'could not open that recording',
+      error?.message ?? 'it is not there, or not shared with you',
+    )
+  }
+  return new Uint8Array(await data.arrayBuffer())
+}
+
+/**
+ * Removes a recording from the bucket.
+ *
+ * Called when a session is deleted. An object under a team nobody can reach fails every storage
+ * policy, which makes it unplayable *and* undeletable — and `delete_team` refuses to run while
+ * one exists, so an orphan here blocks a squad from ever closing their team.
+ *
+ * @param client - The client.
+ * @param objectKey - The key to remove. Removing one that is not there succeeds.
+ * @throws If the delete errors for any other reason.
+ */
+export async function deleteRemoteRecording(
+  client: SupabaseClient,
+  objectKey: string,
+): Promise<void> {
+  const { error } = await client.storage.from(RECORDINGS_BUCKET).remove([objectKey])
+  if (error) {
+    fail('could not remove the recording', error.message)
+  }
+}
+
+/**
+ * Uploads one coach comment.
+ *
+ * @param client - The client.
+ * @param row - From `commentToRemoteRow`.
+ * @throws If the upsert is rejected — which includes commenting on a session this identity cannot
+ *   read, since `comments_insert` resolves that through `sessions`' own policy.
+ */
+export async function pushComment(
+  client: SupabaseClient,
+  row: RemoteCommentRow,
+): Promise<void> {
+  const { error } = await client.from('comments').upsert(row, { onConflict: 'id' })
+  if (error) {
+    fail('could not post a comment', error.message)
+  }
+}
+
+/**
+ * Deletes a comment.
+ *
+ * @param client - The client.
+ * @param commentId - Primary key. One that is not there, or is somebody else's, succeeds — RLS
+ *   makes those indistinguishable and both mean the intent is already satisfied.
+ * @throws If the delete errors for any other reason.
+ */
+export async function deleteRemoteComment(
+  client: SupabaseClient,
+  commentId: string,
+): Promise<void> {
+  const { error } = await client.from('comments').delete().eq('id', commentId)
+  if (error) {
+    fail('could not remove a comment', error.message)
+  }
+}
+
+/**
+ * Reads every comment on one speech.
+ *
+ * @param client - The client.
+ * @param sessionId - The session.
+ * @param names - Display names by `auth.uid()`, from {@link fetchTeamRoster}. A missing name
+ *   leaves the comment unattributed rather than dropping it.
+ * @returns The comments, earliest first.
+ * @throws If the query fails.
+ */
+export async function fetchComments(
+  client: SupabaseClient,
+  sessionId: string,
+  names: ReadonlyMap<string, string>,
+): Promise<SpeechComment[]> {
+  const { data, error } = await client
+    .from('comments')
+    .select('id, session_id, author_id, t_seconds, body, created_at')
+    .eq('session_id', sessionId)
+    .order('t_seconds')
+  if (error) {
+    fail('could not read the comments', error.message)
+  }
+  return (data as RemoteCommentRow[]).map((row) =>
+    remoteRowToComment(row, names.get(row.author_id) ?? ''),
+  )
+}
+
+/**
+ * Display names for a team, by `auth.uid()`.
+ *
+ * Exported because both the comment list and the team session list need it, and each of them
+ * fetching its own copy would be two roster queries to draw one screen.
+ *
+ * @param client - The client.
+ * @param teamId - Team to read.
+ * @returns The roster. Empty when this identity is not in that team, which reads the same as a
+ *   team with no names set — both leave the UI unattributed rather than broken.
+ * @throws If the query fails.
+ */
+export async function fetchTeamRoster(
+  client: SupabaseClient,
+  teamId: string,
+): Promise<ReadonlyMap<string, string>> {
+  return memberNames(client, teamId)
+}
+
+/**
+ * Lists the speeches a team has recordings for.
+ *
+ * Only sessions with a `recording_path`: a teammate's numbers already reach the history screen
+ * through sync, and this list exists to answer "which speech can I listen to and comment on".
+ *
+ * @param client - The client.
+ * @param teamId - Team to list.
+ * @param excludeUserId - Usually this install's own uid, so a debater's own speeches are not
+ *   listed twice; pass null to include everyone.
+ * @returns Summaries, most recent first.
+ * @throws If the query fails.
+ */
+export async function fetchTeamSessions(
+  client: SupabaseClient,
+  teamId: string,
+  excludeUserId: string | null,
+): Promise<TeamSessionSummary[]> {
+  let query = client
+    .from('sessions')
+    .select('id, user_id, format, role, duration_s, recording_path, created_at, cases(motion)')
+    .eq('team_id', teamId)
+    .not('recording_path', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(100)
+
+  if (excludeUserId !== null) {
+    query = query.neq('user_id', excludeUserId)
+  }
+
+  const { data, error } = await query
+  if (error) {
+    fail('could not list the team’s speeches', error.message)
+  }
+
+  const names = await memberNames(client, teamId)
+  return (data as RemoteTeamSessionRow[]).map((row) =>
+    remoteRowToTeamSession(row, names.get(row.user_id) ?? ''),
   )
 }
 

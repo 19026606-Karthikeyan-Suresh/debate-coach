@@ -41,6 +41,12 @@ reqwest = { version = "0.13.4", default-features = false, features = [
     "native-tls",
     "system-proxy",
 ] }
+# The Opus encoder phase 10 uploads with. A **pure Rust** port of libopus rather than bindings to
+# it: every binding crate on crates.io builds the C library, and `audiopus_sys` in particular wants
+# cmake on Windows — the same C toolchain phase 7 kept out of `reqwest`'s TLS and out of a
+# teammate's first build. The cost of a young crate is paid off by `opus.rs`'s round-trip test,
+# which encodes a known signal and decodes it back rather than trusting the port.
+opus-rs = "0.1.26"
 # Windows Credential Manager, via `windows-native`. On any other platform this crate falls back
 # to an in-memory store, which would silently forget the key — `coach_status` reports the backend
 # so the UI can say so rather than pretending the key was saved.

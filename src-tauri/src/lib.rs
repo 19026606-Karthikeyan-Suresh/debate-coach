@@ -11,6 +11,8 @@ pub mod audio;
 pub mod coach;
 pub mod db;
 pub mod export;
+pub mod ogg;
+pub mod opus;
 pub mod sync;
 pub mod whisper;
 
@@ -39,6 +41,9 @@ pub fn run() {
             whisper::retranscribe_speech,
             whisper::speech_sample_rate,
             audio::find_recording_pauses,
+            opus::encode_recording_opus,
+            opus::read_recording_bytes,
+            opus::delete_recording,
             coach::coach_status,
             coach::save_coach_key,
             coach::clear_coach_key,

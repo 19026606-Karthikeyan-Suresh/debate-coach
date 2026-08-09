@@ -389,6 +389,34 @@ describe('coach comments', () => {
     expect(rows).toEqual([])
   })
 
+  it('let the debater whose speech it is read it', async () => {
+    // The point of the whole round trip: a coach leaves a note at 4:12 and it reaches the person
+    // who gave the speech. Without this, everything above proves only that a coach can talk to
+    // themselves.
+    await harness.asUser(ALICE)
+    const rows = await harness.query<{ t_seconds: number }>(
+      'select t_seconds from public.comments where session_id = $1',
+      [NORTHSIDE_SESSION],
+    )
+    expect(rows[0]?.t_seconds).toBe(252)
+  })
+
+  it('refuse the debater deleting a comment left on their own speech', async () => {
+    // `comments_delete` is author-only. The player hides the button on somebody else's note, but
+    // a hidden button is not an access control, and advice you can delete is advice you can
+    // ignore quietly.
+    await harness.asUser(ALICE)
+    await harness.query('delete from public.comments where session_id = $1', [NORTHSIDE_SESSION])
+    await harness.asUser(BOB)
+    expect(await harness.query('select id from public.comments')).toHaveLength(1)
+  })
+
+  it('let the coach delete their own', async () => {
+    await harness.asUser(BOB)
+    await harness.query('delete from public.comments where author_id = $1', [BOB])
+    expect(await harness.query('select id from public.comments')).toEqual([])
+  })
+
   it('refuse a comment on a session in another team', async () => {
     await harness.asUser(CAROL)
     const message = await errorFrom(() =>

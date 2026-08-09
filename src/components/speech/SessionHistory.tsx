@@ -8,6 +8,10 @@
  * **Live and reviewed numbers are charted separately.** `base.en` and `small.en` do not count
  * fillers the same way, so plotting one against the other draws a trend out of the model rather
  * than the speaker. A session with no accurate re-pass is drawn hollow and left out of the trend.
+ *
+ * **Sharing a recording is a button, never a consequence.** Metrics replicate on every drain
+ * because they are numbers; a recording is seven minutes of somebody's voice and goes up when they
+ * say so. The squad's speeches are listed underneath their own, which is where a coach starts.
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -15,7 +19,17 @@ import { useCallback, useEffect, useState } from 'react'
 import { formatClock } from '../../case/time.ts'
 import { deleteSession, listSessions, loadSessionReport } from '../../db/index.ts'
 import type { SessionSummary } from '../../db/index.ts'
+import { useSync } from '../../hooks/useSync.ts'
 import type { SpeechReport as Report } from '../../speech/report.ts'
+import {
+  deleteLocalRecording,
+  shareRecording,
+  unshareRecording,
+} from '../../sync/recordings.ts'
+import type { TeamSessionSummary } from '../../sync/rows.ts'
+import { fetchTeamSessions, getSupabase } from '../../sync/supabase.ts'
+import { Playback } from './Playback.tsx'
+import type { RecordingSource } from '../../hooks/useRecording.ts'
 import { SpeechReport } from './SpeechReport.tsx'
 
 /** Props for {@link SessionHistory}. */
@@ -177,17 +191,43 @@ export function SessionTrends({ sessions }: SessionTrendsProps): React.JSX.Eleme
   )
 }
 
+/** Which speech the player is open on, and everything it needs to draw itself. */
+interface OpenRecording {
+  readonly sessionId: string
+  readonly title: string
+  readonly subtitle: string
+  readonly source: RecordingSource | null
+  readonly isOwnSession: boolean
+  readonly fallbackSeconds: number
+}
+
+/** A date, short enough to sit at the end of a list row. */
+function shortDate(isoTimestamp: string): string {
+  return isoTimestamp.slice(0, 16).replace('T', ' ')
+}
+
 /**
- * Lists every speech given, with the trends across them.
+ * Lists every speech given, with the trends across them and the squad's shared recordings.
  *
  * @param props - See {@link SessionHistoryProps}.
  * @param props.onClose - Returns to the library.
  * @returns The Review screen.
  */
 export function SessionHistory({ onClose }: SessionHistoryProps): React.JSX.Element {
+  const sync = useSync()
   const [sessions, setSessions] = useState<SessionSummary[]>([])
+  // Tagged with the team it was fetched for rather than cleared on a team change: clearing means
+  // a setState in an effect body, which cascades a render, and tagging additionally stops the
+  // previous team's speeches showing for a frame after somebody switches.
+  const [fetchedTeamSessions, setFetchedTeamSessions] = useState<{
+    teamId: string
+    rows: readonly TeamSessionSummary[]
+  }>({ teamId: '', rows: [] })
   const [error, setError] = useState<string | null>(null)
   const [openReport, setOpenReport] = useState<Report | null>(null)
+  const [openRecording, setOpenRecording] = useState<OpenRecording | null>(null)
+  /** Session id currently uploading or removing, so one row can say "sharing…" on its own. */
+  const [busySessionId, setBusySessionId] = useState<string | null>(null)
 
   useEffect(() => {
     let isStale = false
@@ -208,6 +248,36 @@ export function SessionHistory({ onClose }: SessionHistoryProps): React.JSX.Elem
     }
   }, [])
 
+  // The squad's recordings. Separate from the local list because they are a different query
+  // against a different store, and because this one is allowed to fail without taking the screen
+  // down: a debater on a train still wants their own sessions.
+  useEffect(() => {
+    let isStale = false
+    const client = getSupabase()
+    const teamId = sync.activeTeamId
+    if (client && teamId !== null) {
+      fetchTeamSessions(client, teamId, sync.userId)
+        .then((rows) => {
+          if (!isStale) {
+            setFetchedTeamSessions({ teamId, rows })
+          }
+        })
+        .catch(() => {
+          // A squad list that will not load is not worth taking the screen down for: the
+          // debater's own sessions are local and still here.
+          if (!isStale) {
+            setFetchedTeamSessions({ teamId, rows: [] })
+          }
+        })
+    }
+    return () => {
+      isStale = true
+    }
+  }, [sync.activeTeamId, sync.userId])
+
+  const teamSessions =
+    fetchedTeamSessions.teamId === (sync.activeTeamId ?? '') ? fetchedTeamSessions.rows : []
+
   const handleOpen = useCallback(async (sessionId: string): Promise<void> => {
     try {
       const stored = await loadSessionReport(sessionId)
@@ -218,14 +288,92 @@ export function SessionHistory({ onClose }: SessionHistoryProps): React.JSX.Elem
     }
   }, [])
 
-  const handleDelete = useCallback(async (sessionId: string): Promise<void> => {
-    try {
-      await deleteSession(sessionId)
-      setSessions(await listSessions())
-    } catch (removeError) {
-      setError(removeError instanceof Error ? removeError.message : String(removeError))
-    }
-  }, [])
+  const handleDelete = useCallback(
+    async (session: SessionSummary): Promise<void> => {
+      try {
+        // The row goes; the audio does not. A file deleted from under a coach's comment is not
+        // recoverable, and tidying a list is not a request to destroy a recording. What does have
+        // to go is the shared copy — an object under a session nobody can see fails every storage
+        // policy, and `delete_team` refuses to run while one exists.
+        const client = getSupabase()
+        if (client && session.recordingObjectPath !== null) {
+          await unshareRecording(client, session.id, session.recordingObjectPath)
+        }
+        await deleteSession(session.id)
+        setSessions(await listSessions())
+      } catch (removeError) {
+        setError(removeError instanceof Error ? removeError.message : String(removeError))
+      }
+    },
+    [],
+  )
+
+  const handleDeleteRecording = useCallback(
+    async (session: SessionSummary): Promise<void> => {
+      if (session.recordingPath === null) {
+        return
+      }
+      setBusySessionId(session.id)
+      try {
+        const client = getSupabase()
+        if (client && session.recordingObjectPath !== null) {
+          await unshareRecording(client, session.id, session.recordingObjectPath)
+        }
+        await deleteLocalRecording(session.recordingPath)
+        setSessions(await listSessions())
+      } catch (removeError) {
+        setError(removeError instanceof Error ? removeError.message : String(removeError))
+      } finally {
+        setBusySessionId(null)
+      }
+    },
+    [],
+  )
+
+  const handleShare = useCallback(
+    async (session: SessionSummary): Promise<void> => {
+      const client = getSupabase()
+      if (!client || sync.activeTeamId === null || session.recordingPath === null) {
+        setError('Pick a team on the Library screen before sharing a recording.')
+        return
+      }
+      setBusySessionId(session.id)
+      setError(null)
+      try {
+        if (session.recordingObjectPath !== null) {
+          await unshareRecording(client, session.id, session.recordingObjectPath)
+        } else {
+          await shareRecording(client, session.id, sync.activeTeamId, session.recordingPath)
+        }
+        setSessions(await listSessions())
+        await sync.sync()
+      } catch (shareError) {
+        setError(shareError instanceof Error ? shareError.message : String(shareError))
+      } finally {
+        setBusySessionId(null)
+      }
+    },
+    [sync],
+  )
+
+  if (openRecording) {
+    return (
+      <Playback
+        sessionId={openRecording.sessionId}
+        title={openRecording.title}
+        subtitle={openRecording.subtitle}
+        source={openRecording.source}
+        isOwnSession={openRecording.isOwnSession}
+        fallbackSeconds={openRecording.fallbackSeconds}
+        teamId={sync.activeTeamId}
+        userId={sync.userId}
+        displayName={sync.displayName}
+        onClose={() => {
+          setOpenRecording(null)
+        }}
+      />
+    )
+  }
 
   if (openReport) {
     return (
@@ -273,40 +421,143 @@ export function SessionHistory({ onClose }: SessionHistoryProps): React.JSX.Elem
         ) : null}
         <ul className="flex flex-col gap-1.5">
           {sessions.map((session) => (
-            <li key={session.id} className="panel flex items-center gap-3 p-3">
-              <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs font-medium dark:bg-neutral-800">
-                {session.format}
-              </span>
-              <button
-                type="button"
-                className="flex-1 text-left text-sm hover:underline"
-                onClick={() => {
-                  void handleOpen(session.id)
-                }}
-              >
-                {session.motion.trim() || 'Case since deleted'}
-              </button>
-              <span className="text-xs tabular-nums text-neutral-500 dark:text-neutral-400">
-                {formatClock(session.durationSeconds)} ·{' '}
-                {Math.round(session.metrics.skipRate * 100)}% skipped
-                {session.metrics.isAccurate ? '' : ' · live only'}
-              </span>
-              <span className="text-xs text-neutral-400 dark:text-neutral-500">
-                {session.createdAt.slice(0, 16).replace('T', ' ')}
-              </span>
-              <button
-                type="button"
-                className="btn btn-danger"
-                onClick={() => {
-                  void handleDelete(session.id)
-                }}
-              >
-                Delete
-              </button>
+            <li key={session.id} className="panel flex flex-col gap-2 p-3">
+              <div className="flex items-center gap-3">
+                <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs font-medium dark:bg-neutral-800">
+                  {session.format}
+                </span>
+                <button
+                  type="button"
+                  className="flex-1 text-left text-sm hover:underline"
+                  onClick={() => {
+                    void handleOpen(session.id)
+                  }}
+                >
+                  {session.motion.trim() || 'Case since deleted'}
+                </button>
+                <span className="text-xs tabular-nums text-neutral-500 dark:text-neutral-400">
+                  {formatClock(session.durationSeconds)} ·{' '}
+                  {Math.round(session.metrics.skipRate * 100)}% skipped
+                  {session.metrics.isAccurate ? '' : ' · live only'}
+                </span>
+                <span className="text-xs text-neutral-400 dark:text-neutral-500">
+                  {shortDate(session.createdAt)}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {session.recordingPath !== null ? (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                      setOpenRecording({
+                        sessionId: session.id,
+                        title: session.motion.trim() || 'Case since deleted',
+                        subtitle: `${session.format} ${session.role} · ${shortDate(session.createdAt)}`,
+                        source: { kind: 'local', wavPath: session.recordingPath ?? '' },
+                        isOwnSession: true,
+                        fallbackSeconds: session.durationSeconds,
+                      })
+                    }}
+                  >
+                    ▶ Play &amp; comment
+                  </button>
+                ) : (
+                  <span className="text-xs text-neutral-400 dark:text-neutral-500">
+                    no recording
+                  </span>
+                )}
+
+                {session.recordingPath !== null && sync.isConfigured ? (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={busySessionId === session.id}
+                    onClick={() => {
+                      void handleShare(session)
+                    }}
+                  >
+                    {busySessionId === session.id
+                      ? 'Working…'
+                      : session.recordingObjectPath !== null
+                        ? 'Shared with the squad — unshare'
+                        : 'Share with the squad'}
+                  </button>
+                ) : null}
+
+                <div className="ml-auto flex gap-2">
+                  {session.recordingPath !== null ? (
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      disabled={busySessionId === session.id}
+                      onClick={() => {
+                        void handleDeleteRecording(session)
+                      }}
+                    >
+                      Delete audio
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    onClick={() => {
+                      void handleDelete(session)
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
             </li>
           ))}
         </ul>
       </section>
+
+      {teamSessions.length > 0 ? (
+        <section className="flex flex-col gap-2">
+          <h2 className="section-heading">The squad’s recordings ({teamSessions.length})</h2>
+          <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            Speeches teammates have shared. Playing one downloads it; a comment you leave appears on
+            their machine the next time they open it.
+          </p>
+          <ul className="flex flex-col gap-1.5">
+            {teamSessions.map((session) => (
+              <li key={session.id} className="panel flex items-center gap-3 p-3">
+                <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs font-medium dark:bg-neutral-800">
+                  {session.format}
+                </span>
+                <button
+                  type="button"
+                  className="flex-1 text-left text-sm hover:underline"
+                  onClick={() => {
+                    setOpenRecording({
+                      sessionId: session.id,
+                      title: session.motion.trim() || 'Case not shared',
+                      subtitle: `${session.ownerName.trim() || 'A teammate'} · ${session.format} ${session.role} · ${shortDate(session.createdAt)}`,
+                      source: { kind: 'shared', objectKey: session.recordingPath },
+                      isOwnSession: false,
+                      fallbackSeconds: session.durationSeconds,
+                    })
+                  }}
+                >
+                  {session.motion.trim() || 'Case not shared'}
+                </button>
+                <span className="text-xs text-neutral-500 dark:text-neutral-400">
+                  {session.ownerName.trim() || 'A teammate'}
+                </span>
+                <span className="text-xs tabular-nums text-neutral-500 dark:text-neutral-400">
+                  {formatClock(session.durationSeconds)}
+                </span>
+                <span className="text-xs text-neutral-400 dark:text-neutral-500">
+                  {shortDate(session.createdAt)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </main>
   )
 }
