@@ -12,7 +12,12 @@ and need nothing installed on the machine that runs them.
 
 ## Applying them
 
-Paste each file into the SQL editor in the Supabase dashboard, in order. Or, with the CLI:
+**The short way:** paste [`apply-all.sql`](apply-all.sql) into the dashboard's SQL editor
+(SQL Editor → New query → Run). It is the four files above concatenated in order, generated
+rather than maintained — `src/sync/__tests__/applyAll.test.ts` fails if it drifts from them, and
+also checks it survives being run twice. Running it twice is safe.
+
+Or paste each migration in order. Or, with the CLI:
 
 ```bash
 supabase link --project-ref your-project-ref

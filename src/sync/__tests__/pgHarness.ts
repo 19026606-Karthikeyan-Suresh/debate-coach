@@ -27,12 +27,15 @@ const MIGRATIONS_DIRECTORY = fileURLToPath(new URL('../../../supabase/migrations
 /**
  * The parts of a Supabase project that exist before any migration runs.
  *
+ * Exported so `applyAll.test.ts` can stand up a bare database of its own without applying the
+ * migrations this harness applies for everyone else.
+ *
  * Two roles, the `auth` schema with the user table everything references, and enough of
  * `storage` for the bucket policies to be creatable and testable. `authenticated` is the role an
  * anonymous sign-in lands in — `anon` is the unauthenticated caller, and it is here so the
  * migrations' `revoke ... from anon` has something to revoke from.
  */
-const SUPABASE_STUB = `
+export const SUPABASE_STUB = `
 create role anon nologin;
 create role authenticated nologin;
 
