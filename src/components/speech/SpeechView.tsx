@@ -29,6 +29,7 @@ import type { CompiledScript } from '../../script/types.ts'
 import type { SpeechLimits } from '../../speech/timer.ts'
 import { buildSpeechLimits, scriptHeadroom } from '../../speech/timer.ts'
 import type { Case } from '../../types/case.ts'
+import { MotionBar } from '../MotionBar.tsx'
 import { LiveTranscript } from './LiveTranscript.tsx'
 import { ScriptEditor } from './ScriptEditor.tsx'
 import { SpeechReport } from './SpeechReport.tsx'
@@ -262,7 +263,13 @@ function SpeechStage({
 
   return (
     <div className="grid h-full grid-cols-[1fr_20rem] overflow-hidden">
-      <main className="relative overflow-y-auto">
+      {/* The bar is a row of this column, deliberately *outside* the scroller below it. The
+          teleprompter drives its own `scrollIntoView({ block: 'center' })`, and a sticky bar
+          overlaying the top of that container is a thing that can cover the line being read.
+          Out here it structurally cannot — which beats measuring whether it does. */}
+      <div className="flex min-h-0 flex-col">
+        <MotionBar motion={caseFile.prep.motion} placement="block" />
+        <main className="relative flex-1 overflow-y-auto">
         {canShowReport && !isShowingScript && review.report ? (
           <SpeechReport
             report={review.report}
@@ -282,7 +289,8 @@ function SpeechStage({
         ) : (
           <Teleprompter script={script} alignment={session.alignment} isLive={isLive} />
         )}
-      </main>
+        </main>
+      </div>
 
       <aside className="flex flex-col gap-5 overflow-y-auto border-l border-neutral-200 p-4 dark:border-neutral-800">
         <div className="flex gap-1.5">

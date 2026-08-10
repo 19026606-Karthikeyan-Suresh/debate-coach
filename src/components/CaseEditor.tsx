@@ -26,6 +26,7 @@ import { CoPrepPanel } from './CoPrepPanel.tsx'
 import { CompletenessMeter } from './CompletenessMeter.tsx'
 import { DepthPanel } from './DepthPanel.tsx'
 import { ExportPanel } from './ExportPanel.tsx'
+import { MotionBar } from './MotionBar.tsx'
 import { PrepTimer } from './PrepTimer.tsx'
 import { SectionNav } from './SectionNav.tsx'
 import { SectionView } from './SectionView.tsx'
@@ -90,6 +91,17 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
   const labelForPath = useCallback(
     (fieldPath: string): string | null => labelByPath.get(fieldPath) ?? null,
     [labelByPath],
+  )
+
+  // Which section holds the motion, so the bar can jump to it. Looked up rather than hardcoded
+  // to the prep sheet: the field registry decides where a row lives, and a bar that jumped to a
+  // section the motion had moved out of would be worse than one that did nothing.
+  const motionSectionId = useMemo(
+    () =>
+      sections.find((section) =>
+        section.groups.some((group) => group.fields.some((field) => field.path === 'prep.motion')),
+      )?.id ?? null,
+    [sections],
   )
 
   // Layer B, and whether it is switched on at all. The hook is called unconditionally because
@@ -212,6 +224,20 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
           }
         }}
       >
+        {/* Above the section rather than in it: the motion is the sentence every other row has
+            to answer to, and it is a prep-sheet field that scrolls out of sight the moment
+            somebody opens Sub 2. */}
+        <MotionBar
+          motion={caseFile.prep.motion}
+          onEdit={
+            motionSectionId === null
+              ? undefined
+              : () => {
+                  revealField(motionSectionId, 'prep.motion')
+                }
+          }
+        />
+
         {role && activeSection ? (
           <div className="mx-auto max-w-2xl">
             <SectionView
