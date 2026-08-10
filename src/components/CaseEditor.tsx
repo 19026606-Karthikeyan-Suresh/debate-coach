@@ -19,6 +19,7 @@ import { useCaseStore } from '../hooks/useCaseStore.ts'
 import { isCoachEnabled } from '../coach/index.ts'
 import { useCoach } from '../hooks/useCoach.ts'
 import { useCoPrep } from '../hooks/useCoPrep.ts'
+import { usePrepDuration } from '../hooks/usePrepDuration.ts'
 import { usePrepTimer } from '../hooks/usePrepTimer.ts'
 import { CoachPanel } from './CoachPanel.tsx'
 import { CoPrepPanel } from './CoPrepPanel.tsx'
@@ -65,7 +66,11 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
 
   const format = caseFile ? getFormat(caseFile.format) : null
   const role = caseFile ? getRole(caseFile.format, caseFile.position) : undefined
-  const timer = usePrepTimer(format?.prepSeconds ?? 0)
+  // The format supplies the rule and the debater may override it — a tournament running short
+  // prep, or a chair granting five more minutes mid-round. The format id is the round key, so a
+  // BP-to-AP switch resets the clock while a length change only shifts it.
+  const prepDuration = usePrepDuration(caseFile?.format ?? 'AP', format?.prepSeconds ?? 0)
+  const timer = usePrepTimer(prepDuration.seconds, caseFile?.format ?? 'AP')
 
   const sections = useMemo(
     () => (caseFile && role ? buildSections(caseFile, role) : []),
@@ -236,7 +241,7 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
           }}
         />
         <CompletenessMeter completeness={completeness} />
-        <PrepTimer timer={timer} completeness={completeness} />
+        <PrepTimer timer={timer} completeness={completeness} duration={prepDuration} />
         <DepthPanel findings={findings} sections={sections} onSelect={revealField} />
         {showCoach && role && (
           <CoachPanel

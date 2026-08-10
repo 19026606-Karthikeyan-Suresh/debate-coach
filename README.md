@@ -35,6 +35,9 @@ compiler landed before any speech UI. The reference case compiles to a 1060-word
 - **Case Builder** — every block keyed to the docx tables, role-scoped so a whip is not shown a
   DEFINITION table they do not fill. Tab through fields in template order, `Ctrl+Enter` for the
   next section. Debounced SQLite autosave.
+- **Prep timer** — format-aware (BP 15 min, AP 30 min) with pacing nudges that name the next
+  blank row. The length is editable and remembered per format; changing it mid-prep shifts the
+  clock by the difference rather than restarting, because that is what "five more minutes" means.
 - **Depth Analyzer** — causal-chain depth, missing impact axes, vague actors, substantive overlap,
   comparative weighing, link-back and more, as wavy underlines plus a depth panel. Never fires on
   an empty field; that is the completeness meter's job.

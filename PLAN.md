@@ -192,6 +192,8 @@ Three responsibilities that would otherwise each grow their own idea of what a f
 - `SectionView.tsx` renders one section; everything bespoke in it is structural (add a substantive, answer the mechanism question, pick a side of the "(OR)" fork) because none of those are text boxes.
 - Keyboard-first: Tab between fields, `Ctrl+Enter` to the next section.
 - **Prep timer** with format-aware duration (BP 15 min, AP 30 min) and pacing nudges — "4 min left, Sub 2 has no mechanism yet."
+
+  **The length is editable, and the two ways of changing it mean different things.** The format's window is the rule and the rule is routinely not what happens — a tournament runs short prep to catch up, a chair grants five more minutes, a squad practises against a tight clock. So the override is stored per format and per install (a settings row, not a column on the case: the length belongs to the round somebody is sitting in, not to the document they are writing, and putting it on the case would carry it into the co-prep CRDT and the `.dbcase` export). `usePrepTimer` then tells a *format switch* from a *length edit* by a `roundKey`: switching BP to AP resets the clock outright because it is a different round, while editing the length shifts the remaining time by the difference, because "you have five more minutes" must not throw away the prep already done. Verified in a browser — three seconds into a 15-minute prep, extending to 20 reads 19:57 and keeps running.
 - **Completeness meter** per role.
 - **Library** — my cases plus the team's, searched server-side when online and against the SQLite cache when not.
 - **Export** — `.docx` in the original template layout, `.dbcase` JSON, print/PDF speech sheet.

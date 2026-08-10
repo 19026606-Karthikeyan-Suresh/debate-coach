@@ -429,3 +429,41 @@ export async function findLocalCaseForRoom(roomCaseId: string): Promise<string |
   ])
   return found[0]?.id ?? null
 }
+
+// ---------------------------------------------------------------------------
+// Prep length
+// ---------------------------------------------------------------------------
+
+/**
+ * Prefix for a per-format prep-length override, in whole minutes.
+ *
+ * Per format rather than per case, and a setting rather than a column on the case, because the
+ * length belongs to the round the debater is sitting in and not to the document they are
+ * writing. A tournament running short prep runs it short for every case that day; putting it in
+ * the case would mean setting it again on the next one — and would put it in the co-prep CRDT
+ * and the `.dbcase` export, neither of which is anything to do with a clock on this laptop.
+ */
+const PREP_MINUTES_PREFIX = 'prep.minutes.'
+
+/**
+ * Reads the prep length this install uses for a format.
+ *
+ * @param formatId - `AP` or `BP`.
+ * @returns The stored minutes as text, or null to use the format's own default.
+ */
+export async function readPrepMinutes(formatId: string): Promise<string | null> {
+  return readSetting(`${PREP_MINUTES_PREFIX}${formatId}`)
+}
+
+/**
+ * Stores, or clears, the prep length for a format.
+ *
+ * @param formatId - `AP` or `BP`.
+ * @param minutes - Whole minutes, or null to go back to the format's default.
+ */
+export async function writePrepMinutes(formatId: string, minutes: number | null): Promise<void> {
+  await writeSetting(
+    `${PREP_MINUTES_PREFIX}${formatId}`,
+    minutes === null ? null : String(minutes),
+  )
+}
