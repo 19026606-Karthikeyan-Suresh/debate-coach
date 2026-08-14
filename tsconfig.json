@@ -32,5 +32,7 @@
 
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src", "vite.config.ts", "eslint.config.js"]
+  // `api` is the Vercel function, outside the bundle but not outside the typecheck — it imports
+  // the wire shape from `src/coach/` and would otherwise drift from it silently.
+  "include": ["src", "api", "vite.config.ts", "eslint.config.js"]
 }

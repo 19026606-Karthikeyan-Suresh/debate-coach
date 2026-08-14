@@ -108,6 +108,7 @@ describe('the migrations themselves', () => {
     )
     expect(tables.map((row) => row.tablename)).toEqual([
       'cases',
+      'coach_usage',
       'comments',
       'motions',
       'script_edits',
@@ -985,5 +986,88 @@ describe('script edits', () => {
     )
     expect(rows).toHaveLength(1)
     expect(rows[0]?.text).toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Migration 8 — what stands between the Anthropic key and a bill
+// ---------------------------------------------------------------------------
+
+describe('the coaching daily cap', () => {
+  it('counts a caller\u2019s own calls and refuses past the limit', async () => {
+    await harness.asUser(BOB)
+    const first = await harness.query<{ allowed: boolean; calls: number }>(
+      'select * from public.claim_coach_call($1)',
+      [2],
+    )
+    expect(first[0]?.allowed).toBe(true)
+    expect(first[0]?.calls).toBe(1)
+
+    const second = await harness.query<{ allowed: boolean; calls: number }>(
+      'select * from public.claim_coach_call($1)',
+      [2],
+    )
+    expect(second[0]?.allowed).toBe(true)
+    expect(second[0]?.calls).toBe(2)
+
+    // At the cap. The refusal still reports the count, so the panel can say how many rather than
+    // only that there were too many.
+    const third = await harness.query<{ allowed: boolean; calls: number; limit_per_day: number }>(
+      'select * from public.claim_coach_call($1)',
+      [2],
+    )
+    expect(third[0]?.allowed).toBe(false)
+    expect(third[0]?.calls).toBe(2)
+    expect(third[0]?.limit_per_day).toBe(2)
+  })
+
+  it('is per identity, and readable only by the identity it counts', async () => {
+    // Bob has a row from the test above. Alice's own claim must be counted separately — a shared
+    // counter would let one debater exhaust the squad's allowance.
+    await harness.asUser(ALICE)
+    const mine = await harness.query<{ allowed: boolean; calls: number }>(
+      'select * from public.claim_coach_call($1)',
+      [50],
+    )
+    expect(mine[0]?.calls).toBe(1)
+
+    // The permitted read: Alice sees her own usage.
+    const own = await harness.query<{ calls: number }>('select calls from public.coach_usage')
+    expect(own).toHaveLength(1)
+    expect(own[0]?.calls).toBe(1)
+
+    // And not Bob's, even though he is a teammate.
+    const others = await harness.query<{ calls: number }>(
+      'select calls from public.coach_usage where user_id = $1',
+      [BOB],
+    )
+    expect(others).toHaveLength(0)
+  })
+
+  it('cannot be edited by the person being counted', async () => {
+    // The whole point. A cap the capped party may rewrite is not a cap — the grant is withheld,
+    // so this is a permission error rather than a policy refusal.
+    await harness.asUser(BOB)
+    const update = await errorFrom(() =>
+      harness.query('update public.coach_usage set calls = 0 where user_id = $1', [BOB]),
+    )
+    expect(update).toContain('permission denied')
+
+    const insert = await errorFrom(() =>
+      harness.query(
+        'insert into public.coach_usage (user_id, calls) values ($1, 0)',
+        [BOB],
+      ),
+    )
+    expect(insert).toContain('permission denied')
+  })
+
+  it('refuses a caller who is not signed in', async () => {
+    await harness.asUser(null)
+    const message = await errorFrom(() =>
+      harness.query('select * from public.claim_coach_call($1)', [50]),
+    )
+    // `anon` has no execute grant, so it does not get as far as the not-signed-in check.
+    expect(message).toContain('permission denied')
   })
 })
