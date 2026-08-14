@@ -120,6 +120,16 @@ export interface QueueEntry {
  * branch: an empty queue drains to nothing on its own.
  */
 export interface DatabasePlatform {
+  /**
+   * Whether a case can exist before anybody has signed in.
+   *
+   * False on the desktop, where SQLite is the truth and a debater who never joins a squad never
+   * touches the network — signing in at launch there would break the local-first promise for a
+   * feature they are not using. True where the truth is Postgres: `cases.owner_id` is `not null
+   * references auth.users`, so there is no such thing as an unattributed case and the app has to
+   * hold the first screen until an identity exists.
+   */
+  readonly requiresIdentity: boolean
   saveCase(caseFile: Case): Promise<void>
   loadCase(caseId: string): Promise<Case | null>
   listCases(limit?: number): Promise<CaseSummary[]>

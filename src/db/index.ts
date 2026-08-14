@@ -21,6 +21,7 @@ import { database } from '@platform'
 export type { CaseSummary, SessionSummary } from '../platform/types.ts'
 
 export const {
+  requiresIdentity,
   saveCase,
   loadCase,
   listCases,

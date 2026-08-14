@@ -1,9 +1,11 @@
 import { useState } from 'react'
 
 import { CaseEditor } from './components/CaseEditor.tsx'
+import { IdentityGate } from './components/IdentityGate.tsx'
 import { Library } from './components/Library.tsx'
 import { SessionHistory } from './components/speech/SessionHistory.tsx'
 import { SpeechView } from './components/speech/SpeechView.tsx'
+import { useIdentity } from './hooks/useIdentity.ts'
 
 /**
  * App shell.
@@ -15,6 +17,10 @@ import { SpeechView } from './components/speech/SpeechView.tsx'
  * screens are mutually exclusive: leaving Prep unmounts the editor, which flushes its pending
  * autosave before Speak compiles the case it is about to read.
  *
+ * The identity check is above all four. It settles during render on the desktop, where nothing
+ * has to be signed in to, and holds one frame where a case cannot exist without an account —
+ * see {@link IdentityGate}.
+ *
  * @returns Whichever screen is open.
  */
 export function App(): React.JSX.Element {
@@ -22,6 +28,15 @@ export function App(): React.JSX.Element {
   const [openCaseId, setOpenCaseId] = useState<string | null>(null)
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [isReviewing, setIsReviewing] = useState(false)
+  const identity = useIdentity()
+
+  if (identity.status !== 'ready') {
+    return (
+      <div className="app-surface h-full">
+        <IdentityGate identity={identity} />
+      </div>
+    )
+  }
 
   if (isReviewing) {
     return (
@@ -39,6 +54,7 @@ export function App(): React.JSX.Element {
     return (
       <div className="app-surface h-full">
         <Library
+          identity={identity}
           onOpen={setOpenCaseId}
           onReview={() => {
             setIsReviewing(true)

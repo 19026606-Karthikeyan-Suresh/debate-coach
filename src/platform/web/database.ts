@@ -667,6 +667,9 @@ async function findLocalCaseForRoom(roomCaseId: string): Promise<string | null> 
 
 /** Postgres over PostgREST, with settings kept per browser and no queue in front of it. */
 export const database: DatabasePlatform = {
+  // Every method here goes through `session()`, so this is not a policy the shell chose — it is
+  // `cases.owner_id not null references auth.users` restated where the UI can read it.
+  requiresIdentity: true,
   saveCase,
   loadCase,
   listCases,

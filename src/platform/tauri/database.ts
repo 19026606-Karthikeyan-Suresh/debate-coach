@@ -811,6 +811,9 @@ async function findLocalCaseForRoom(roomCaseId: string): Promise<string | null> 
 
 /** Local SQLite, with the real sync queue behind it. */
 export const database: DatabasePlatform = {
+  // SQLite belongs to whoever is at the keyboard. A case written before the team layer was ever
+  // switched on is still theirs, and joining a squad later attributes it on the way up.
+  requiresIdentity: false,
   saveCase,
   loadCase,
   listCases,
