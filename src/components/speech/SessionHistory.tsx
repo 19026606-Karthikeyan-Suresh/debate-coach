@@ -455,7 +455,7 @@ export function SessionHistory({ onClose }: SessionHistoryProps): React.JSX.Elem
                         sessionId: session.id,
                         title: session.motion.trim() || 'Case since deleted',
                         subtitle: `${session.format} ${session.role} · ${shortDate(session.createdAt)}`,
-                        source: { kind: 'local', wavPath: session.recordingPath ?? '' },
+                        source: { kind: 'local', handle: session.recordingPath ?? '' },
                         isOwnSession: true,
                         fallbackSeconds: session.durationSeconds,
                       })

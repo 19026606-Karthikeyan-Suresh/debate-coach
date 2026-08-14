@@ -316,10 +316,29 @@ export interface SpeechPlatform {
 
 /** What an encode produced, and what it saved. */
 export interface RecordingEncoding {
+  /** Handle to the playable copy — a path on the desktop, the same handle in a browser. */
   readonly opusPath: string
   readonly opusBytes: number
   readonly wavBytes: number
   readonly durationSeconds: number
+  /**
+   * Extension for the object key, without the dot.
+   *
+   * Not a constant, because the container is negotiated in a browser: Safari before 18.4 records
+   * MP4/AAC where everything else records WebM/Opus. A bucket full of files whose extension
+   * disagrees with their bytes is a problem that surfaces at playback, on somebody else's device.
+   */
+  readonly extension: string
+}
+
+/** A recording's bytes, and what container they are actually in. */
+export interface RecordedBytes {
+  readonly bytes: Uint8Array
+  /**
+   * Passed straight to a `Blob`. Reported by whoever produced the file rather than guessed from
+   * the extension — a mislabelled blob is one Safari refuses for a reason it does not explain.
+   */
+  readonly mimeType: string
 }
 
 /**
@@ -327,14 +346,23 @@ export interface RecordingEncoding {
  *
  * Separate from {@link SpeechPlatform} because these run long after a speech: a coach opening a
  * recording from March touches all three and none of the capture path.
+ *
+ * **`handle` is not a path.** It is one on the desktop, where audio is a WAV on disk; in a browser
+ * it is a key into an in-memory registry that does not survive a reload. Nothing may parse it.
  */
 export interface RecordingPlatform {
+  /**
+   * False where the recorder already produced a compressed file, so `prepareRecording` reports
+   * sizes rather than shrinking anything. The player reads this before offering the two numbers
+   * as a saving.
+   */
+  readonly encodesOnDemand: boolean
   /** Encodes a speech's recording for upload and playback, or reports the copy already made. */
-  prepareRecording(wavPath: string): Promise<RecordingEncoding>
-  /** Reads a local recording's bytes, for the player. */
-  readRecordingBytes(path: string): Promise<Uint8Array>
-  /** Deletes a speech's audio from this machine, encoded copy included. */
-  deleteLocalRecording(wavPath: string): Promise<void>
+  prepareRecording(handle: string): Promise<RecordingEncoding>
+  /** Reads a recording's bytes, for the player and for the upload. */
+  readRecordingBytes(handle: string): Promise<RecordedBytes>
+  /** Deletes a speech's audio from this machine. */
+  deleteLocalRecording(handle: string): Promise<void>
 }
 
 // ---------------------------------------------------------------------------

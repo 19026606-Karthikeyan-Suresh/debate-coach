@@ -20,8 +20,15 @@ export interface LiveTranscript {
 
 /** What a finished recording left behind. */
 export interface SpeechRecording {
-  /** Absolute path to the local WAV. Stays local; an Opus copy is what gets uploaded. */
-  readonly wavPath: string
+  /**
+   * Opaque handle to the audio, and deliberately not called a path.
+   *
+   * It *is* a path in the desktop shell — an absolute one, to a local WAV that never leaves the
+   * machine. In a browser it is a key into an in-memory registry that does not survive a reload.
+   * Calling it a path would be a lie the web shell has to keep telling, and something would
+   * eventually parse it.
+   */
+  readonly handle: string
   readonly durationSeconds: number
 }
 

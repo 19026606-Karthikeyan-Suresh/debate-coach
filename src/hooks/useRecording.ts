@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from 'react'
 
+import { recordings } from '@platform'
 import { getSupabase } from '../sync/supabase.ts'
 import {
   fetchSharedRecording,
@@ -25,8 +26,11 @@ import {
 
 /** Which recording to play. */
 export type RecordingSource =
-  /** This machine's own WAV, from the session row. */
-  | { readonly kind: 'local'; readonly wavPath: string }
+  /**
+   * This tab's or this machine's own audio, by the handle on the session row — a WAV path in the
+   * desktop shell, a key into an in-memory registry in a browser.
+   */
+  | { readonly kind: 'local'; readonly handle: string }
   /** A teammate's, by its key in the `recordings` bucket. */
   | { readonly kind: 'shared'; readonly objectKey: string }
 
@@ -54,21 +58,27 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** The bytes for a local recording, preferring the Opus copy. */
+/**
+ * The bytes for a local recording, preferring the compressed copy where there is one.
+ *
+ * `encodesOnDemand` is false in a browser, where `MediaRecorder` already produced a compressed
+ * container — there is nothing to shrink, and reporting two identical sizes as a saving would be
+ * a lie the panel tells confidently.
+ */
 async function loadLocal(
-  wavPath: string,
+  handle: string,
 ): Promise<{ bytes: Uint8Array; encoding: RecordingEncoding | null; mime: string }> {
-  try {
-    const encoding = await prepareRecording(wavPath)
-    return {
-      bytes: await readRecordingBytes(encoding.opusPath),
-      encoding,
-      mime: 'audio/ogg',
+  if (recordings.encodesOnDemand) {
+    try {
+      const encoding = await prepareRecording(handle)
+      const read = await readRecordingBytes(encoding.opusPath)
+      return { bytes: read.bytes, encoding, mime: read.mimeType }
+    } catch {
+      // The recording is the thing that matters; the encode is an optimisation on top of it.
     }
-  } catch {
-    // The recording is the thing that matters; the encode is an optimisation on top of it.
-    return { bytes: await readRecordingBytes(wavPath), encoding: null, mime: 'audio/wav' }
   }
+  const read = await readRecordingBytes(handle)
+  return { bytes: read.bytes, encoding: null, mime: read.mimeType }
 }
 
 /**
@@ -90,7 +100,7 @@ export function useRecording(source: RecordingSource | null): LoadedRecording {
   // every render would otherwise re-download a teammate's speech on every render.
   const kind = source?.kind ?? null
   const locator =
-    source === null ? null : source.kind === 'local' ? source.wavPath : source.objectKey
+    source === null ? null : source.kind === 'local' ? source.handle : source.objectKey
 
   useEffect(() => {
     if (kind === null || locator === null) {

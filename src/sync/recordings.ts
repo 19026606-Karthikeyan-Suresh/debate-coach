@@ -39,21 +39,26 @@ export const { prepareRecording, readRecordingBytes, deleteLocalRecording } = re
  * @param teamId - The team to share with. There is no upload without one — the storage policies
  *   read the team out of the object's path, so a recording with no team in front of it is
  *   readable by nobody and deletable by nobody.
- * @param wavPath - The local recording to encode and send.
+ * @param handle - The recording, as the session row addresses it: a WAV path on the desktop, a
+ *   key into this tab's registry in a browser. Not parsed on either side.
  * @returns The object key, already written to the session row.
  * @throws If the encode fails, or the upload is refused — which is what a team this identity is
- *   not in comes back as.
+ *   not in comes back as. In a browser it also throws when the handle no longer resolves, which
+ *   is what a reload since the speech looks like.
  */
 export async function shareRecording(
   client: SupabaseClient,
   sessionId: string,
   teamId: string,
-  wavPath: string,
+  handle: string,
 ): Promise<string> {
   await ensureSignedIn(client)
-  const encoded = await prepareRecording(wavPath)
-  const bytes = await readRecordingBytes(encoded.opusPath)
-  const objectKey = recordingObjectKey(teamId, sessionId)
+  const encoded = await prepareRecording(handle)
+  const read = await readRecordingBytes(encoded.opusPath)
+  const bytes = read.bytes
+  // The extension comes from what was actually produced, not from a constant: the desktop always
+  // writes Opus, a browser writes WebM or — on Safari before 18.4 — MP4.
+  const objectKey = recordingObjectKey(teamId, sessionId, encoded.extension)
 
   await uploadRecording(client, objectKey, bytes)
   // Written only after the upload lands. A session row claiming a recording that is not in the

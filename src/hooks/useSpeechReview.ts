@@ -19,6 +19,7 @@
 
 import { useCallback, useState } from 'react'
 
+import { speech } from '@platform'
 import { saveSession } from '../db/index.ts'
 import type { CompiledScript } from '../script/types.ts'
 import type { AlignmentState } from '../speech/align.ts'
@@ -64,7 +65,12 @@ export interface ReviewRequest {
   readonly alignment: AlignmentState
   /** The live transcript, whole. Must be the one `alignment` was advanced against. */
   readonly transcript: string
-  /** The WAV, or null on the browser fallback — which is what decides whether a re-pass happens. */
+  /**
+   * The audio, or null where the source kept none.
+   *
+   * Having a recording and having a *review pass* are two different questions, and only the shell
+   * answers the second — see `speech.hasReviewPass`.
+   */
   readonly recording: SpeechRecording | null
   readonly source: TranscriptionSourceId
   /** Length of the speech: the recording's duration where there is one, else the clock's. */
@@ -136,7 +142,13 @@ export function useSpeechReview(): SpeechReview {
   const [error, setError] = useState<string | null>(null)
 
   const begin = useCallback((request: ReviewRequest): void => {
-    const wavPath = request.recording?.wavPath ?? null
+    const handle = request.recording?.handle ?? null
+    // **The capability, not the recording.** A browser records audio perfectly well and still has
+    // no second pass over it — the accurate transcript and the pause detector both need a native
+    // decoder over a file. Branching on `hasReviewPass` means the report settles at the live pass
+    // and says so; calling and catching would show a failed review where there was never one to
+    // run, which reads as a bug rather than as a platform.
+    const reviewable = speech.hasReviewPass ? handle : null
     // Whether the live report ever got built, so the catch below can tell "the review failed"
     // from "the report failed" — the first is a caveat and the second is an error state.
     let hasLiveReport = false
@@ -156,22 +168,22 @@ export function useSpeechReview(): SpeechReview {
           isAccurate: false,
         })
         setReport(live)
-        setStatus(wavPath === null ? 'ready' : 'reviewing')
+        setStatus(reviewable === null ? 'ready' : 'reviewing')
         hasLiveReport = true
-        return saveSession(live, wavPath).catch((saveError: unknown) => {
+        return saveSession(live, handle).catch((saveError: unknown) => {
           setError(`The speech was not saved to the library: ${messageOf(saveError)}`)
         })
       })
       .then(async () => {
-        if (wavPath === null) {
+        if (reviewable === null) {
           return
         }
 
         // Pauses come off the samples and the transcript off whisper; neither needs the other, and
         // a pause detector that fails should not cost the accurate transcript.
         const [review, pauses] = await Promise.all([
-          retranscribe(wavPath),
-          findRecordingPauses(wavPath).catch(() => []),
+          retranscribe(reviewable),
+          findRecordingPauses(reviewable).catch(() => []),
         ])
 
         const timeline = buildTimeline(review.segments)
@@ -190,7 +202,7 @@ export function useSpeechReview(): SpeechReview {
 
         setReport(accurate)
         setStatus('ready')
-        await saveSession(accurate, wavPath)
+        await saveSession(accurate, handle)
       })
       .catch((reviewError: unknown) => {
         // Once the live report is on screen and stored, a failed re-pass is a caveat rather than

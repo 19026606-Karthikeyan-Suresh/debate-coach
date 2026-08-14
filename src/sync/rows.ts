@@ -145,10 +145,18 @@ export function sessionToRemoteRow(
  *   recording uploaded outside a team is readable by nobody and deletable by nobody, so the
  *   caller is expected to refuse before it gets here.
  * @param sessionId - The session. One recording per speech, so the id is the whole filename.
+ * @param extension - Without the dot. Defaults to `opus`, which is what the desktop's encoder
+ *   always produces; a browser negotiates its container, so the caller passes what it actually
+ *   recorded. A key whose extension disagrees with its bytes is a file that fails to play on
+ *   somebody else's device, which is the last place anyone wants to find out.
  * @returns The object key.
  */
-export function recordingObjectKey(teamId: string, sessionId: string): string {
-  return `${teamId}/${sessionId}.opus`
+export function recordingObjectKey(
+  teamId: string,
+  sessionId: string,
+  extension = 'opus',
+): string {
+  return `${teamId}/${sessionId}.${extension}`
 }
 
 /** A `public.comments` row. */
