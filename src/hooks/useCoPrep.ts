@@ -52,6 +52,13 @@ export type RoomRole = 'host' | 'guest'
 export interface CoPrep {
   /** False on a build with no Supabase project *and* no Tauri shell — nothing to run a room on. */
   readonly canStart: boolean
+  /**
+   * Whether `start('lan')` is worth offering.
+   *
+   * Straight through from the platform, because the panel is the only thing that can act on it:
+   * a browser has no sockets to bind, so a LAN button there is a button that always fails.
+   */
+  readonly hasLanTransport: boolean
   readonly status: CollabStatus
   /** Null until a room has been started. */
   readonly transport: CollabTransport | null
@@ -347,6 +354,7 @@ export function useCoPrep(
 
   return {
     canStart: getSupabase() !== null || hasLanTransport,
+    hasLanTransport,
     status,
     transport,
     roomId,

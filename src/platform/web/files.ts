@@ -82,11 +82,32 @@ async function openTextFile(options: { readonly filter: FileFilter }): Promise<s
     input.accept = acceptAttribute(options.filter)
     input.style.display = 'none'
 
-    // There is no cancel event with useful support, so dismissal is detected by the window
-    // regaining focus with no file chosen. `once` on both, and the input is removed either way.
+    // Resolves once, whichever of the three paths below gets there first, and takes the input and
+    // the window listener with it.
+    let isDone = false
     const finish = (text: string | null): void => {
+      if (isDone) {
+        return
+      }
+      isDone = true
+      window.removeEventListener('focus', onWindowFocus)
       input.remove()
       resolve(text)
+    }
+
+    // **A dismissed picker is what has to be detected, and `cancel` alone does not do it.** That
+    // event is recent — Chrome 113, Firefox 109, Safari 16.4 — and where it is missing the promise
+    // never settles, which is not a cancelled import but an Import button that stays disabled
+    // until the tab is reloaded. So the window regaining focus with nothing chosen counts too.
+    function onWindowFocus(): void {
+      // Focus comes back before `change` fires, so the change handler gets a turn first. It only
+      // has to have run far enough to populate `input.files`, which is synchronous with selection —
+      // the read of the file itself can still be in flight.
+      setTimeout(() => {
+        if ((input.files?.length ?? 0) === 0) {
+          finish(null)
+        }
+      }, 300)
     }
 
     input.addEventListener('change', () => {
@@ -106,6 +127,7 @@ async function openTextFile(options: { readonly filter: FileFilter }): Promise<s
     input.addEventListener('cancel', () => {
       finish(null)
     })
+    window.addEventListener('focus', onWindowFocus)
 
     document.body.append(input)
     input.click()
