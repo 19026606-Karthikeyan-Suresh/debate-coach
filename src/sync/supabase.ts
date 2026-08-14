@@ -13,12 +13,12 @@
  * revoke a member.
  */
 
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { auth } from '@platform'
 
+import { ensureSignedIn, fail } from './identity.ts'
 import type { Case } from '../types/case.ts'
 import type { SpeechComment } from '../speech/comments.ts'
-import { supabaseConfig } from './config.ts'
 import {
   bytesToPgHex,
   pgHexToBytes,
@@ -38,66 +38,23 @@ import {
 /** The bucket recordings live in. Private; every read goes through a policy. */
 export const RECORDINGS_BUCKET = 'recordings'
 
-// One client per process. Two would each keep their own auto-refresh timer against the same
-// credential entry and race each other writing it back.
-let clientHandle: SupabaseClient | null = null
-
 /**
  * The client, or null when this build has no project.
+ *
+ * Constructed by the shell rather than here. On the web the database *is* Supabase, so
+ * `platform/web/database.ts` needs the same client — and if it reached for this module it would
+ * close a loop, since the client's session storage comes back out of `@platform`. There must be
+ * exactly one client: two would each keep their own auto-refresh timer against the same stored
+ * session and race each other writing it back.
  *
  * @returns The shared client. Null is the ordinary state of a clone with no `.env` and must be
  *   treated as "the team layer is off", never reported as a failure.
  */
 export function getSupabase(): SupabaseClient | null {
-  if (clientHandle) {
-    return clientHandle
-  }
-  const config = supabaseConfig()
-  if (!config) {
-    return null
-  }
-  clientHandle = createClient(config.url, config.anonKey, {
-    auth: {
-      storage: auth.sessionStorage(),
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: auth.detectSessionInUrl,
-    },
-  })
-  return clientHandle
+  return auth.getClient()
 }
 
-/** Turns a PostgREST error into something worth showing. */
-function fail(action: string, message: string): never {
-  throw new Error(`${action}: ${message}`)
-}
-
-/**
- * Signs in anonymously, or resumes the stored session.
- *
- * @param client - The client from {@link getSupabase}.
- * @returns This install's `auth.uid()`, stable across launches for as long as the credential
- *   store keeps the session.
- * @throws If the project refuses anonymous sign-in. That is a project setting rather than a
- *   code fault, and the message says so.
- */
-export async function ensureSignedIn(client: SupabaseClient): Promise<string> {
-  const existing = await client.auth.getSession()
-  const current = existing.data.session?.user.id
-  if (current) {
-    return current
-  }
-
-  const created = await client.auth.signInAnonymously()
-  if (created.error) {
-    fail('could not sign in', created.error.message)
-  }
-  const userId = created.data.user?.id
-  if (!userId) {
-    fail('could not sign in', 'the project returned no user')
-  }
-  return userId
-}
+export { ensureSignedIn }
 
 /** One team this install belongs to. */
 export interface TeamMembership {

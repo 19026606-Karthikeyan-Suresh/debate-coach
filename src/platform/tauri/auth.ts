@@ -10,10 +10,11 @@
  * well past it.
  */
 
-import type { SupportedStorage } from '@supabase/supabase-js'
+import { createClient, type SupportedStorage } from '@supabase/supabase-js'
 import { invoke } from '@tauri-apps/api/core'
 
-import type { AuthPlatform } from '../types.ts'
+import { supabaseConfig } from '../../sync/config.ts'
+import type { AuthPlatform, MaybeSupabaseClient } from '../types.ts'
 
 /** Whether the Tauri IPC exists. False under `npm run dev` in a plain browser tab. */
 function hasTauri(): boolean {
@@ -74,8 +75,39 @@ function sessionStorage(): SupportedStorage {
   }
 }
 
+// One client per process. Two would each keep their own auto-refresh timer against the same
+// credential entry and race each other writing it back.
+let clientHandle: MaybeSupabaseClient = null
+
+/**
+ * The client, or null when this build has no project.
+ *
+ * @returns The shared client. Null is the ordinary state of a clone with no `.env`.
+ */
+function getClient(): MaybeSupabaseClient {
+  if (clientHandle) {
+    return clientHandle
+  }
+  const config = supabaseConfig()
+  if (!config) {
+    return null
+  }
+  clientHandle = createClient(config.url, config.anonKey, {
+    auth: {
+      storage: sessionStorage(),
+      persistSession: true,
+      autoRefreshToken: true,
+      // No URL to parse in a desktop shell, and leaving it on makes supabase-js read
+      // `window.location` on every construction.
+      detectSessionInUrl: false,
+    },
+  })
+  return clientHandle
+}
+
 /** The OS credential store, and no address bar to read a callback out of. */
 export const auth: AuthPlatform = {
+  getClient,
   sessionStorage,
   persistsSession: true,
   // No URL to parse in a desktop shell, and leaving it on makes supabase-js read

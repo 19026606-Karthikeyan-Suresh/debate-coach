@@ -75,6 +75,8 @@ describe('apply-all.sql', () => {
       'cases',
       'comments',
       'motions',
+      'script_edits',
+      'session_reports',
       'sessions',
       'team_members',
       'teams',

@@ -10,7 +10,9 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:web": "vite --mode web",
     "build": "tsc --noEmit && vite build",
+    "build:web": "tsc --noEmit && vite build --mode web",
     "preview": "vite preview",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

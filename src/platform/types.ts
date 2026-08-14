@@ -388,6 +388,22 @@ export interface CollabPlatform {
  * enough.
  */
 export interface AuthPlatform {
+  /**
+   * The one Supabase client, or null on a build with no project.
+   *
+   * **Owned here rather than in `sync/`, and the reason is a cycle.** On the web the database
+   * *is* Supabase, so `platform/web/database.ts` needs the client — and reaching it through
+   * `sync/supabase.ts` closes a loop, because that module reads its session storage back out of
+   * this interface. Pointing the dependency this way, each shell's `auth` module holds the
+   * singleton and `sync/supabase.ts` re-exports it.
+   *
+   * There must be exactly one. Two clients each keep their own auto-refresh timer against the
+   * same stored session and race each other writing it back.
+   *
+   * @returns The shared client. Null is the ordinary state of a clone with no `.env` and must be
+   *   treated as "the team layer is off", never reported as a failure.
+   */
+  getClient(): MaybeSupabaseClient
   /** supabase-js's storage, however this shell holds a secret. */
   sessionStorage(): SupportedStorage
   /** False where a session does not survive a reload, which the UI has to say rather than imply. */
