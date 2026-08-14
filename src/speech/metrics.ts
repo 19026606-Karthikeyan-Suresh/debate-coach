@@ -16,7 +16,7 @@
  * Pure: no I/O, no Tauri, no clock of its own.
  */
 
-import type { TranscriptionSourceId } from './recognition.ts'
+import type { TranscriptionSourceId } from './source.ts'
 import { wordsPerMinute } from './transcript.ts'
 
 /**

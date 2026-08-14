@@ -1,6 +1,10 @@
 /**
  * The two wires a co-prep room can run over.
  *
+ * Realtime is here in full because it is pure supabase-js and both shells run the same code. The
+ * LAN half is re-exported from `@platform`, because a browser has no sockets to bind — and
+ * `hasLanTransport` is what the panel reads rather than offering an option that always fails.
+ *
  * Both are thin by design. Everything that decides what a room *does* — the join handshake,
  * batching, presence, dropping our own echo — is in `src/collab/session.ts` and is proved by
  * running two whole sessions over an array. What is left here is moving a string, which is the
@@ -14,20 +18,23 @@
  */
 
 import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js'
-import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { collab } from '@platform'
 
 import type { CollabLink, LinkHandlers } from '../collab/session.ts'
 import type { CollabMessage } from '../collab/protocol.ts'
 
+export type { LanRoom } from '../platform/types.ts'
+
+/**
+ * The LAN half, from whichever shell is underneath.
+ *
+ * `hasLanTransport` is false in a browser, which has no sockets to bind — so a web build offers
+ * Realtime alone rather than a second option that always fails.
+ */
+export const { hasLanTransport, findOrHostLanRoom, createLanLink } = collab
+
 /** Broadcast event every room message rides on. One event, four message kinds inside it. */
 const BROADCAST_EVENT = 'y'
-
-/** Tauri event the Rust relay delivers frames on. Must match `lan.rs`. */
-const LAN_EVENT = 'collab://lan'
-
-/** Tauri event the Rust reader uses to report the wire going down under it. */
-const LAN_STATUS_EVENT = 'collab://lan-status'
 
 /**
  * Opens a room over Supabase Realtime.
@@ -108,85 +115,3 @@ export function createRealtimeLink(client: SupabaseClient, topic: string): Colla
   }
 }
 
-/** Where a LAN room is: this install's own relay, or somebody else's. */
-export interface LanRoom {
-  /** True when this install runs the relay. It still joins over loopback like everyone else. */
-  readonly isHosting: boolean
-  /** `host:port`. For a host, its own loopback address. */
-  readonly address: string
-}
-
-/**
- * Finds or starts a LAN room for a case.
- *
- * Tries discovery first, so the second person into a prep room joins the first rather than
- * starting a second room nobody is in. Only when nobody answers does this install host.
- *
- * @param roomId - The host's case id, used as the discovery key.
- * @returns Where the room is.
- * @throws If no port can be bound and nobody is hosting — which on Windows most often means the
- *   firewall prompt was declined.
- */
-export async function findOrHostLanRoom(roomId: string): Promise<LanRoom> {
-  const found = await invoke<string | null>('lan_discover', { roomId })
-  if (found !== null) {
-    return { isHosting: false, address: found }
-  }
-  const port = await invoke<number>('lan_host', { roomId })
-  // The host connects to its own relay rather than short-circuiting it. One send path and one
-  // receive path for everybody is worth a loopback socket.
-  return { isHosting: true, address: `127.0.0.1:${port}` }
-}
-
-/**
- * Opens a room over the LAN relay in the Rust shell.
- *
- * @param address - `host:port`, from {@link findOrHostLanRoom} or typed in by somebody whose
- *   network blocks broadcast.
- * @returns The link, not yet open.
- */
-export function createLanLink(address: string): CollabLink {
-  let unlistenFrames: UnlistenFn | null = null
-  let unlistenStatus: UnlistenFn | null = null
-
-  return {
-    transport: 'lan',
-
-    open: async (handlers: LinkHandlers): Promise<void> => {
-      handlers.onStatus('connecting', null)
-      // Listeners are attached before the connect, so a frame arriving on a fast loopback
-      // handshake is not delivered into a room that is not listening yet.
-      unlistenFrames = await listen<string>(LAN_EVENT, (event) => {
-        handlers.onMessage(event.payload)
-      })
-      unlistenStatus = await listen<boolean>(LAN_STATUS_EVENT, (event) => {
-        if (!event.payload) {
-          handlers.onStatus('error', 'the connection to the room dropped')
-        }
-      })
-
-      try {
-        await invoke('lan_connect', { address })
-      } catch (error) {
-        handlers.onStatus('error', error instanceof Error ? error.message : String(error))
-        return
-      }
-      handlers.onStatus('connected', null)
-    },
-
-    send: (message: CollabMessage): void => {
-      // Same fire-and-forget rule as Realtime. A failed write means the room is gone, and the
-      // reader thread reports that on its own channel.
-      void invoke('lan_send', { message: JSON.stringify(message) }).catch(() => {})
-    },
-
-    close: async (): Promise<void> => {
-      unlistenFrames?.()
-      unlistenStatus?.()
-      unlistenFrames = null
-      unlistenStatus = null
-      // Leaves, and stops the relay if this install was hosting it.
-      await invoke('lan_leave').catch(() => {})
-    },
-  }
-}

@@ -33,7 +33,12 @@ import {
 } from '../collab/session.ts'
 import { identityOf } from '../collab/shape.ts'
 import type { Case } from '../types/case.ts'
-import { createLanLink, createRealtimeLink, findOrHostLanRoom } from '../sync/provider.ts'
+import {
+  createLanLink,
+  createRealtimeLink,
+  findOrHostLanRoom,
+  hasLanTransport,
+} from '../sync/provider.ts'
 import { readRoomLink, readSetting, SETTING_KEYS } from '../sync/store.ts'
 import { ensureSignedIn, fetchDocState, getSupabase, pushDocState } from '../sync/supabase.ts'
 
@@ -341,7 +346,7 @@ export function useCoPrep(
   }, [])
 
   return {
-    canStart: getSupabase() !== null || hasTauriShell(),
+    canStart: getSupabase() !== null || hasLanTransport,
     status,
     transport,
     roomId,
@@ -354,11 +359,6 @@ export function useCoPrep(
     update: roomUpdate,
     setFieldPath,
   }
-}
-
-/** Whether the Tauri IPC exists, which is what the LAN transport needs. */
-function hasTauriShell(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
 /** Stands in for `auth.uid()` on a build with no project. One per launch, which is enough. */

@@ -1,9 +1,9 @@
 /**
  * The one SQLite handle.
  *
- * Split out of `db/index.ts` in phase 9 so `sync/store.ts` can open the same database without an
- * import cycle: the queue lives in SQLite and is written by `saveCase`, so `db/index.ts` needs
- * the queue and the queue needs the connection. With the connection here, both point one way.
+ * Split out of the database module in phase 9 so the sync queue could open the same database
+ * without an import cycle; the two ended up in the same file once the platform seam landed, and
+ * this stays separate because it is the only line in the desktop shell that names the plugin.
  */
 
 import Database from '@tauri-apps/plugin-sql'

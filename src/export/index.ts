@@ -1,18 +1,18 @@
 /**
- * The export path's one impure module: a save dialog, then Rust writes the bytes.
+ * The export path's one impure module: ask where a file goes, then write it.
  *
  * Everything that decides *what* a file contains is a pure function in a sibling module and is
- * tested as one. This holds only the two things that cannot be — the OS dialog and the IPC — so
- * the untestable surface of phase 8 is one file long.
+ * tested as one. This holds only the composition and the two calls that cannot be tested — which
+ * is why the seam is `files.saveBytes` rather than four platform methods: duplicating the
+ * composition per shell would be duplicating the only part with tests behind it.
  *
- * The bytes are written by `src-tauri/src/export.rs` rather than by `tauri-plugin-fs`; that
- * module's docstring says why. Nothing here reads or writes a path the user did not pick in a
- * dialog.
+ * On the desktop that is an OS dialog and a Rust command; in a browser it is a download. Neither
+ * is named here.
  */
 
-import { invoke } from '@tauri-apps/api/core'
-import { open, save } from '@tauri-apps/plugin-dialog'
+import { files } from '@platform'
 
+import type { FileFilter } from '../platform/types.ts'
 import type { SpeakerRole } from '../formats/index.ts'
 import type { Case } from '../types/case.ts'
 import { buildDbcase, readDbcase, type DbcaseImport } from './dbcase.ts'
@@ -67,49 +67,39 @@ export function localDateStamp(now: Date): string {
   return `${String(now.getFullYear())}-${month}-${day}`
 }
 
-/** Writes bytes through the Rust command, which checks the extension before touching the disk. */
-async function writeFile(path: string, bytes: Uint8Array): Promise<void> {
-  // A `Uint8Array` nested inside an argument object serialises as `{"0":1,"1":2,…}`, which does
-  // not deserialise into a `Vec<u8>`. Only a whole-body `ArrayBuffer` takes the raw path, and
-  // that has no room for the second argument, so this goes over as a plain array.
-  await invoke('write_export_file', { path, contents: Array.from(bytes) })
-}
+/** Word documents, in both save dialogs that offer one. */
+const DOCX_FILTER: FileFilter = { name: 'Word document', extensions: ['docx'] }
+
+/** The app's own lossless case format. */
+const DBCASE_FILTER: FileFilter = { name: 'Debate Coach case', extensions: ['dbcase'] }
 
 /**
  * Asks where to save, then writes the case as a Word document.
  *
  * @param caseFile - The case to export.
- * @returns The path written, or null when the dialog was cancelled — which is not an error and
+ * @returns Where it went, or null when the dialog was cancelled — which is not an error and
  *   must not be reported as one.
  */
 export async function saveCaseDocx(caseFile: Case): Promise<string | null> {
-  const path = await save({
-    defaultPath: suggestFileName(caseFile, 'docx'),
-    filters: [{ name: 'Word document', extensions: ['docx'] }],
+  return await files.saveBytes({
+    suggestedName: suggestFileName(caseFile, 'docx'),
+    bytes: buildCaseDocx(caseFile, localDateStamp(new Date())),
+    filter: DOCX_FILTER,
   })
-  if (path === null) {
-    return null
-  }
-  await writeFile(path, buildCaseDocx(caseFile, localDateStamp(new Date())))
-  return path
 }
 
 /**
  * Asks where to save, then writes the case as a `.dbcase`.
  *
  * @param caseFile - The case to export.
- * @returns The path written, or null when the dialog was cancelled.
+ * @returns Where it went, or null when the dialog was cancelled.
  */
 export async function saveCaseDbcase(caseFile: Case): Promise<string | null> {
-  const path = await save({
-    defaultPath: suggestFileName(caseFile, 'dbcase'),
-    filters: [{ name: 'Debate Coach case', extensions: ['dbcase'] }],
+  return await files.saveBytes({
+    suggestedName: suggestFileName(caseFile, 'dbcase'),
+    bytes: new TextEncoder().encode(buildDbcase(caseFile, new Date().toISOString())),
+    filter: DBCASE_FILTER,
   })
-  if (path === null) {
-    return null
-  }
-  await writeFile(path, new TextEncoder().encode(buildDbcase(caseFile, new Date().toISOString())))
-  return path
 }
 
 /**
@@ -119,23 +109,22 @@ export async function saveCaseDbcase(caseFile: Case): Promise<string | null> {
  * @param role - The seat whose speech to write.
  * @param edits - Delivery rewrites, so the saved document says what the teleprompter says.
  *   Omitting them writes the compiled wording.
- * @returns The path written, or null when the dialog was cancelled.
+ * @returns Where it went, or null when the dialog was cancelled.
  */
 export async function saveSpeechSheetDocx(
   caseFile: Case,
   role: SpeakerRole,
   edits: ScriptEdits = {},
 ): Promise<string | null> {
-  const path = await save({
-    defaultPath: suggestFileName(caseFile, 'docx').replace(/\.docx$/, ` - ${role.shortLabel}.docx`),
-    filters: [{ name: 'Word document', extensions: ['docx'] }],
-  })
-  if (path === null) {
-    return null
-  }
   const sheet = buildSpeechSheet(caseFile, role, edits)
-  await writeFile(path, buildSpeechSheetDocx(sheet, localDateStamp(new Date())))
-  return path
+  return await files.saveBytes({
+    suggestedName: suggestFileName(caseFile, 'docx').replace(
+      /\.docx$/,
+      ` - ${role.shortLabel}.docx`,
+    ),
+    bytes: buildSpeechSheetDocx(sheet, localDateStamp(new Date())),
+    filter: DOCX_FILTER,
+  })
 }
 
 /**
@@ -152,14 +141,9 @@ export async function saveSpeechSheetDocx(
 export async function importCaseFile(
   existingIds: readonly string[],
 ): Promise<DbcaseImport | null> {
-  const selected = await open({
-    multiple: false,
-    directory: false,
-    filters: [{ name: 'Debate Coach case', extensions: ['dbcase'] }],
-  })
-  if (selected === null) {
+  const text = await files.openTextFile({ filter: DBCASE_FILTER })
+  if (text === null) {
     return null
   }
-  const text = await invoke<string>('read_case_file', { path: selected })
   return readDbcase(text, existingIds, new Date().toISOString())
 }
