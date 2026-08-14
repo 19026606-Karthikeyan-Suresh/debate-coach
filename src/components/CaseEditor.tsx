@@ -22,6 +22,7 @@ import { useCoPrep } from '../hooks/useCoPrep.ts'
 import { usePrepDuration } from '../hooks/usePrepDuration.ts'
 import { usePrepTimer } from '../hooks/usePrepTimer.ts'
 import { CoachPanel } from './CoachPanel.tsx'
+import { Drawer } from './Drawer.tsx'
 import { CoPrepPanel } from './CoPrepPanel.tsx'
 import { CompletenessMeter } from './CompletenessMeter.tsx'
 import { DepthPanel } from './DepthPanel.tsx'
@@ -55,6 +56,13 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
   // when a chosen section disappears — its substantive was deleted, or the mechanism question
   // turned the policy table off.
   const [pendingSectionId, setPendingSectionId] = useState<string | null>(null)
+
+  // Which pane has been pulled out over the editor. Only consulted at a width where that pane is
+  // a slide-over; at `lg` both are columns and this says nothing.
+  const [openDrawer, setOpenDrawer] = useState<'nav' | 'rail' | null>(null)
+  const closeDrawer = useCallback(() => {
+    setOpenDrawer(null)
+  }, [])
 
   const store = useCaseStore(caseId)
   const { caseFile } = store
@@ -181,34 +189,139 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
     )
   }
 
+  // Rendered into a column or a drawer depending on the width, and built once either way. Two
+  // copies would mean two prep timers and two co-prep panels, differing only in which is painted.
+  const navPane = (
+    <>
+      <div className="flex flex-col gap-1.5 border-b border-neutral-200 p-2 dark:border-neutral-800">
+        <button type="button" className="btn w-full" onClick={onClose}>
+          ← Library
+        </button>
+        {/* Enabled whatever the completeness meter says: a half-filled case still compiles,
+            and seeing which lines are missing on the Speak screen is often what sends someone
+            back here to write them. */}
+        <button type="button" className="btn btn-primary w-full justify-center" onClick={onSpeak}>
+          Speak →
+        </button>
+      </div>
+      <SectionNav
+        sections={sections}
+        completeness={completeness}
+        activeSectionId={activeSection?.id ?? ''}
+        onSelect={(sectionId) => {
+          setPendingSectionId(sectionId)
+          // Picking a section is the drawer's whole purpose; leaving it open would hide the row
+          // the debater just asked to see.
+          setOpenDrawer(null)
+        }}
+      />
+    </>
+  )
+
+  const railPane = (
+    <>
+      <SeatPicker
+        caseFile={caseFile}
+        onChange={(formatId, side, position) => {
+          update((current) => setSeat(current, formatId, side, position))
+          setPendingSectionId(null)
+        }}
+      />
+      <CompletenessMeter completeness={completeness} />
+      <PrepTimer timer={timer} completeness={completeness} duration={prepDuration} />
+      <DepthPanel
+        findings={findings}
+        sections={sections}
+        onSelect={(sectionId, fieldPath) => {
+          revealField(sectionId, fieldPath)
+          setOpenDrawer(null)
+        }}
+      />
+      {showCoach && role && (
+        <CoachPanel
+          caseFile={caseFile}
+          role={role}
+          activeSectionId={activeSection?.id ?? ''}
+          coach={coach}
+          update={update}
+        />
+      )}
+
+      <CoPrepPanel
+        coPrep={coPrep}
+        caseFile={caseFile}
+        roles={format.roles}
+        labelForPath={labelForPath}
+      />
+
+      <ExportPanel caseFile={caseFile} role={role} />
+
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={caseFile.visibility === 'team'}
+          onChange={(event) => {
+            update((current) => setVisibility(current, event.target.checked ? 'team' : 'private'))
+          }}
+        />
+        Share with team
+      </label>
+
+      <SaveIndicator
+        status={store.status}
+        error={store.error}
+        hasUnsavedChanges={store.hasUnsavedChanges}
+      />
+    </>
+  )
+
   return (
-    <div className="grid h-full grid-cols-[13rem_1fr_19rem] overflow-hidden">
-      <aside className="flex flex-col overflow-hidden border-r border-neutral-200 dark:border-neutral-800">
-        <div className="flex flex-col gap-1.5 border-b border-neutral-200 p-2 dark:border-neutral-800">
-          <button type="button" className="btn w-full" onClick={onClose}>
-            ← Library
+    <div className="grid h-full grid-cols-1 overflow-hidden md:grid-cols-[13rem_1fr] lg:grid-cols-[13rem_1fr_19rem]">
+      <Drawer
+        isOpen={openDrawer === 'nav'}
+        side="left"
+        columnFrom="md"
+        title="Sections"
+        onClose={closeDrawer}
+        contentClassName="flex min-h-0 flex-1 flex-col"
+      >
+        {navPane}
+      </Drawer>
+
+      <div className="flex min-h-0 flex-col">
+        {/* The bar exists only where a pane has been taken away, and says which one. Outside the
+            scroller below it, so it cannot cover a field the depth panel just scrolled to. Its
+            visibility is CSS for the reason `Drawer` gives: a rotation must not need an event. */}
+        <div className="flex items-center gap-2 border-b border-neutral-200 p-2 lg:hidden dark:border-neutral-800">
+          <button
+            type="button"
+            className="btn shrink-0 md:hidden"
+            onClick={() => {
+              setOpenDrawer('nav')
+            }}
+          >
+            ☰<span className="sr-only"> Sections</span>
           </button>
-          {/* Enabled whatever the completeness meter says: a half-filled case still compiles,
-              and seeing which lines are missing on the Speak screen is often what sends someone
-              back here to write them. */}
-          <button type="button" className="btn btn-primary w-full justify-center" onClick={onSpeak}>
-            Speak →
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+            {activeSection?.title ?? 'Prep'}
+          </span>
+          <button
+            type="button"
+            className="btn shrink-0"
+            onClick={() => {
+              setOpenDrawer('rail')
+            }}
+          >
+            Details
           </button>
         </div>
-        <SectionNav
-          sections={sections}
-          completeness={completeness}
-          activeSectionId={activeSection?.id ?? ''}
-          onSelect={setPendingSectionId}
-        />
-      </aside>
 
-      {/* Focus is read off the container rather than wired into `FieldEditor`, because every
+        {/* Focus is read off the container rather than wired into `FieldEditor`, because every
           input there already carries `id={field.path}` for the depth panel to focus — so the
           address a teammate needs is on the event, and no field component changes. */}
       <main
         id="section-scroll"
-        className="overflow-y-auto p-6"
+        className="flex-1 overflow-y-auto overscroll-contain p-4 md:p-6"
         onFocusCapture={(event) => {
           const fieldPath = (event.target as HTMLElement).id
           coPrep.setFieldPath(fieldPath === '' ? null : fieldPath)
@@ -256,55 +369,18 @@ export function CaseEditor({ caseId, onClose, onSpeak }: CaseEditorProps): React
             Pick a speaking position to see the parts of the template you fill.
           </p>
         )}
-      </main>
+        </main>
+      </div>
 
-      <aside className="flex flex-col gap-5 overflow-y-auto border-l border-neutral-200 p-4 dark:border-neutral-800">
-        <SeatPicker
-          caseFile={caseFile}
-          onChange={(formatId, side, position) => {
-            update((current) => setSeat(current, formatId, side, position))
-            setPendingSectionId(null)
-          }}
-        />
-        <CompletenessMeter completeness={completeness} />
-        <PrepTimer timer={timer} completeness={completeness} duration={prepDuration} />
-        <DepthPanel findings={findings} sections={sections} onSelect={revealField} />
-        {showCoach && role && (
-          <CoachPanel
-            caseFile={caseFile}
-            role={role}
-            activeSectionId={activeSection?.id ?? ''}
-            coach={coach}
-            update={update}
-          />
-        )}
-
-        <CoPrepPanel
-          coPrep={coPrep}
-          caseFile={caseFile}
-          roles={format.roles}
-          labelForPath={labelForPath}
-        />
-
-        <ExportPanel caseFile={caseFile} role={role} />
-
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={caseFile.visibility === 'team'}
-            onChange={(event) => {
-              update((current) => setVisibility(current, event.target.checked ? 'team' : 'private'))
-            }}
-          />
-          Share with team
-        </label>
-
-        <SaveIndicator
-          status={store.status}
-          error={store.error}
-          hasUnsavedChanges={store.hasUnsavedChanges}
-        />
-      </aside>
+      <Drawer
+        isOpen={openDrawer === 'rail'}
+        side="right"
+        columnFrom="lg"
+        title="Case details"
+        onClose={closeDrawer}
+      >
+        {railPane}
+      </Drawer>
     </div>
   )
 }

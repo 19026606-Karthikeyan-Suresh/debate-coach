@@ -395,7 +395,7 @@ export function SessionHistory({ onClose }: SessionHistoryProps): React.JSX.Elem
   }
 
   return (
-    <main className="mx-auto flex h-full max-w-3xl flex-col gap-6 overflow-y-auto p-8">
+    <main className="mx-auto flex h-full max-w-3xl flex-col gap-6 overflow-y-auto overscroll-contain p-4 sm:p-8">
       <header className="flex items-center gap-3">
         <button type="button" className="btn" onClick={onClose}>
           ← Library

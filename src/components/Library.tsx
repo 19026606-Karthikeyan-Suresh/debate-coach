@@ -123,7 +123,7 @@ export function Library({ onOpen, onReview }: LibraryProps): React.JSX.Element {
   )
 
   return (
-    <main className="mx-auto flex h-full max-w-3xl flex-col gap-6 overflow-y-auto p-8">
+    <main className="mx-auto flex h-full max-w-3xl flex-col gap-6 overflow-y-auto overscroll-contain p-4 sm:p-8">
       <header className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Debate Coach</h1>

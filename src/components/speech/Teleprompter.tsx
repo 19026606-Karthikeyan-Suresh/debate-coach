@@ -171,8 +171,11 @@ export function Teleprompter({ script, alignment, isLive }: TeleprompterProps): 
     )
   }
 
+  // `dvh`, not `vh`: iOS Safari's `vh` is the viewport with the URL bar *hidden*, so the padding
+  // that centres the active line is a toolbar's height too tall until the bar collapses — and it
+  // collapses mid-speech, moving the line the speaker is reading.
   return (
-    <div className="mx-auto max-w-3xl px-6 py-[40vh]">
+    <div className="mx-auto max-w-3xl px-4 py-[40dvh] sm:px-6">
       {script.segments.map((segment) => (
         <section
           key={segment.id}

@@ -70,13 +70,19 @@ export function MotionBar({
   )
 
   const common =
-    'flex items-baseline gap-3 border-b border-neutral-200 bg-neutral-50 px-6 py-3 dark:border-neutral-800 dark:bg-neutral-950'
+    'flex items-baseline gap-3 border-b border-neutral-200 bg-neutral-50 px-4 py-3 md:px-6 dark:border-neutral-800 dark:bg-neutral-950'
 
   // `sticky top-0` pins it inside the scrolling column; the negative margins let it span that
   // column's padding, or text scrolls visibly through the gap at either side. `block` needs
   // neither, because the caller has placed it outside the scroller already.
+  //
+  // The bleed has to track the scroller's own padding, which is `p-4` on a phone and `p-6` from
+  // `md`. Hard-coded at `-mx-6` it overhangs by 8px a side on a narrow screen — measured at 375,
+  // where the bar's right edge landed at 383.
   const shell =
-    placement === 'sticky' ? `sticky top-0 z-10 -mx-6 -mt-6 mb-5 ${common}` : common
+    placement === 'sticky'
+      ? `sticky top-0 z-10 -mx-4 -mt-4 mb-5 md:-mx-6 md:-mt-6 ${common}`
+      : common
 
   if (!onEdit) {
     return <div className={shell}>{body}</div>
@@ -85,7 +91,9 @@ export function MotionBar({
   return (
     <button
       type="button"
-      className={`${shell} text-left ${placement === 'sticky' ? 'w-[calc(100%+3rem)]' : 'w-full'}`}
+      className={`${shell} text-left ${
+        placement === 'sticky' ? 'w-[calc(100%+2rem)] md:w-[calc(100%+3rem)]' : 'w-full'
+      }`}
       onClick={onEdit}
     >
       {body}
