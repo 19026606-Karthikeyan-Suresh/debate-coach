@@ -13,8 +13,24 @@ body,
   height: 100%;
 }
 
+/* iOS Safari's `100%` resolves against the viewport with the URL bar *hidden*, so a full-height
+   app is taller than the window until you scroll and the bar collapses. `dvh` is the one unit
+   that tracks the bar as it shows and hides, which matters most for the teleprompter: it centres
+   the active line on the viewport, and a viewport that lies by a toolbar's height puts the line
+   the speaker is reading behind the toolbar. */
+@supports (height: 100dvh) {
+  html,
+  body,
+  #root {
+    height: 100dvh;
+  }
+}
+
 body {
   margin: 0;
+  /* Stops the whole page rubber-banding on iOS when an inner scroller reaches its end. The app
+     is a set of independently scrolling panes; the page itself never scrolls. */
+  overscroll-behavior: none;
   /* Cases are read at a glance under time pressure — system UI font keeps it legible
      without waiting on a webfont that would not load offline anyway. */
   font-family:
@@ -171,6 +187,59 @@ body {
   .prompter-improvised {
     @apply mx-0.5 rounded bg-amber-200 px-1 align-super text-xs font-semibold text-amber-900
       dark:bg-amber-800 dark:text-amber-100;
+  }
+
+}
+
+/* The drawer has no slide-in, and the reason is measured rather than stylistic.
+   A `from`-only keyframe looks like it cannot get stuck — the `to` is the element's own computed
+   style, so the end state is the correct one. But `from` is applied at time zero, and in a window
+   that is not compositing the animation clock never advances: `playState: "running"`,
+   `currentTime: 0`, six hundred milliseconds later, with `translateX(-100%)` held forever. The
+   panel is open as far as React is concerned and entirely off-screen as far as anyone looking at
+   it is concerned.
+   Same rule as `.prompter-segment-active`, one layer down: presence is state, and state may not
+   be expressed in anything the compositor has to run. */
+
+/* ---------------------------------------------------------------------------
+   Touch and small screens
+   --------------------------------------------------------------------------- */
+
+/* **iOS Safari zooms the whole page when a form control under 16px takes focus**, and does not
+   zoom back out. At `text-sm` that is a zoom-and-reflow on every field tap, which over a
+   fifteen-minute prep is most of the experience of using the app on a phone. 16px is the
+   threshold, not a preference.
+
+   Keyed off the pointer, not the width. A width query was the first attempt and it misses the
+   iPad: portrait is 768 CSS pixels, which is past every sensible phone breakpoint and is still a
+   finger on a touchscreen running the same WebKit. `pointer: coarse` is the actual condition —
+   it catches both iPads, both iPhones and a touchscreen laptop, and leaves a mouse-driven desktop
+   at the denser 14px the layout was designed around.
+
+   `.field-underlay` has to move with the textarea and not merely alongside it. It is a
+   transparent copy of the same text carrying the analyzer's wavy underlines, so font size and
+   line height must agree exactly or every underline sits under the wrong word — the same
+   constraint that already duplicates padding and border width between the two.
+
+   Apple's minimum touch target is 44pt square and almost every control here was built at ~30px
+   for a mouse, so the buttons and the checkboxes grow under the same condition. */
+@media (pointer: coarse) {
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea,
+  .field-underlay {
+    font-size: 1rem;
+    line-height: 1.5rem;
+  }
+
+  .btn {
+    min-height: 2.75rem;
+  }
+
+  input[type='checkbox'],
+  input[type='radio'] {
+    width: 1.15rem;
+    height: 1.15rem;
   }
 }
 

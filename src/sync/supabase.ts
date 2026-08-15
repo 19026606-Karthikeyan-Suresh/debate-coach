@@ -13,12 +13,12 @@
  * revoke a member.
  */
 
-import { createClient, type SupabaseClient, type SupportedStorage } from '@supabase/supabase-js'
-import { invoke } from '@tauri-apps/api/core'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { auth } from '@platform'
 
+import { ensureSignedIn, fail } from './identity.ts'
 import type { Case } from '../types/case.ts'
 import type { SpeechComment } from '../speech/comments.ts'
-import { supabaseConfig } from './config.ts'
 import {
   bytesToPgHex,
   pgHexToBytes,
@@ -38,125 +38,23 @@ import {
 /** The bucket recordings live in. Private; every read goes through a policy. */
 export const RECORDINGS_BUCKET = 'recordings'
 
-/** Whether the Tauri IPC exists. False in a browser, which is how the UI is driven in dev. */
-function hasTauri(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
-}
-
-/**
- * supabase-js's storage, backed by the OS credential store.
- *
- * The library asks for several keys — the session, and a PKCE verifier during sign-in — so the
- * one credential blob holds a JSON map rather than a bare value. Outside the Tauri shell it
- * degrades to memory, which means a browser dev session signs in again on reload and never
- * writes a refresh token to a file.
- */
-function credentialStorage(): SupportedStorage {
-  const fallback = new Map<string, string>()
-
-  const readAll = async (): Promise<Record<string, string>> => {
-    if (!hasTauri()) {
-      return Object.fromEntries(fallback)
-    }
-    const stored = await invoke<string | null>('sync_session_get')
-    if (stored === null || stored.length === 0) {
-      return {}
-    }
-    try {
-      return JSON.parse(stored) as Record<string, string>
-    } catch {
-      // A blob that will not parse is a half-written save. Treating it as empty costs a
-      // sign-in; treating it as a session costs an unexplainable auth failure.
-      return {}
-    }
-  }
-
-  const writeAll = async (values: Record<string, string>): Promise<void> => {
-    if (!hasTauri()) {
-      fallback.clear()
-      for (const [key, value] of Object.entries(values)) {
-        fallback.set(key, value)
-      }
-      return
-    }
-    const hasAny = Object.keys(values).length > 0
-    await invoke('sync_session_set', { session: hasAny ? JSON.stringify(values) : '' })
-  }
-
-  return {
-    getItem: async (key: string) => (await readAll())[key] ?? null,
-    setItem: async (key: string, value: string) => {
-      await writeAll({ ...(await readAll()), [key]: value })
-    },
-    removeItem: async (key: string) => {
-      const { [key]: _removed, ...rest } = await readAll()
-      await writeAll(rest)
-    },
-  }
-}
-
-// One client per process. Two would each keep their own auto-refresh timer against the same
-// credential entry and race each other writing it back.
-let clientHandle: SupabaseClient | null = null
-
 /**
  * The client, or null when this build has no project.
+ *
+ * Constructed by the shell rather than here. On the web the database *is* Supabase, so
+ * `platform/web/database.ts` needs the same client — and if it reached for this module it would
+ * close a loop, since the client's session storage comes back out of `@platform`. There must be
+ * exactly one client: two would each keep their own auto-refresh timer against the same stored
+ * session and race each other writing it back.
  *
  * @returns The shared client. Null is the ordinary state of a clone with no `.env` and must be
  *   treated as "the team layer is off", never reported as a failure.
  */
 export function getSupabase(): SupabaseClient | null {
-  if (clientHandle) {
-    return clientHandle
-  }
-  const config = supabaseConfig()
-  if (!config) {
-    return null
-  }
-  clientHandle = createClient(config.url, config.anonKey, {
-    auth: {
-      storage: credentialStorage(),
-      persistSession: true,
-      autoRefreshToken: true,
-      // No URL to parse in a desktop shell, and leaving it on makes supabase-js read
-      // `window.location` on every construction.
-      detectSessionInUrl: false,
-    },
-  })
-  return clientHandle
+  return auth.getClient()
 }
 
-/** Turns a PostgREST error into something worth showing. */
-function fail(action: string, message: string): never {
-  throw new Error(`${action}: ${message}`)
-}
-
-/**
- * Signs in anonymously, or resumes the stored session.
- *
- * @param client - The client from {@link getSupabase}.
- * @returns This install's `auth.uid()`, stable across launches for as long as the credential
- *   store keeps the session.
- * @throws If the project refuses anonymous sign-in. That is a project setting rather than a
- *   code fault, and the message says so.
- */
-export async function ensureSignedIn(client: SupabaseClient): Promise<string> {
-  const existing = await client.auth.getSession()
-  const current = existing.data.session?.user.id
-  if (current) {
-    return current
-  }
-
-  const created = await client.auth.signInAnonymously()
-  if (created.error) {
-    fail('could not sign in', created.error.message)
-  }
-  const userId = created.data.user?.id
-  if (!userId) {
-    fail('could not sign in', 'the project returned no user')
-  }
-  return userId
-}
+export { ensureSignedIn }
 
 /** One team this install belongs to. */
 export interface TeamMembership {

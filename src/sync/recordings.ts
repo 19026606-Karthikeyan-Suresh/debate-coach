@@ -14,7 +14,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { invoke } from '@tauri-apps/api/core'
+import { recordings } from '@platform'
 
 import { setSessionRecordingObject } from '../db/index.ts'
 import { recordingObjectKey } from './rows.ts'
@@ -25,52 +25,10 @@ import {
   uploadRecording,
 } from './supabase.ts'
 
-/** What an encode produced, as `encode_recording_opus` reports it. */
-export interface RecordingEncoding {
-  readonly opusPath: string
-  readonly opusBytes: number
-  readonly wavBytes: number
-  readonly durationSeconds: number
-}
+export type { RecordingEncoding } from '../platform/types.ts'
 
-/**
- * Encodes a speech's WAV to Opus, or reports the copy already beside it.
- *
- * @param wavPath - The local recording, from the session row.
- * @returns The encoding, including both sizes — "a tenth the size" is the argument for encoding
- *   at all, and the panel shows the two numbers rather than repeating the claim.
- * @throws If the WAV is missing or is not 16 kHz mono. Both mean the recording cannot be played,
- *   which is a different thing to say than "the upload failed".
- */
-export function prepareRecording(wavPath: string): Promise<RecordingEncoding> {
-  return invoke<RecordingEncoding>('encode_recording_opus', { wavPath })
-}
-
-/**
- * Reads a local recording's bytes.
- *
- * @param path - A `.opus` or `.wav`. Anything else is refused by the command; see `opus.rs`.
- * @returns The file. Comes back as an `ArrayBuffer` because the command returns a raw IPC
- *   response — a `Vec<u8>` would arrive as a JSON array of a million numbers.
- * @throws If the file cannot be read.
- */
-export async function readRecordingBytes(path: string): Promise<Uint8Array> {
-  const buffer = await invoke<ArrayBuffer>('read_recording_bytes', { path })
-  return new Uint8Array(buffer)
-}
-
-/**
- * Deletes a speech's audio from this machine.
- *
- * Takes the `.opus` as well as the WAV: leaving the encoded copy behind would mean "deleted"
- * freed a tenth of what it appeared to.
- *
- * @param wavPath - The local recording. One that is already gone is not an error.
- * @throws If a file exists and cannot be removed.
- */
-export function deleteLocalRecording(wavPath: string): Promise<void> {
-  return invoke('delete_recording', { wavPath })
-}
+/** Encoding, reading and deleting a local recording, from whichever shell is underneath. */
+export const { prepareRecording, readRecordingBytes, deleteLocalRecording } = recordings
 
 /**
  * Shares a speech with the squad.
@@ -81,21 +39,26 @@ export function deleteLocalRecording(wavPath: string): Promise<void> {
  * @param teamId - The team to share with. There is no upload without one — the storage policies
  *   read the team out of the object's path, so a recording with no team in front of it is
  *   readable by nobody and deletable by nobody.
- * @param wavPath - The local recording to encode and send.
+ * @param handle - The recording, as the session row addresses it: a WAV path on the desktop, a
+ *   key into this tab's registry in a browser. Not parsed on either side.
  * @returns The object key, already written to the session row.
  * @throws If the encode fails, or the upload is refused — which is what a team this identity is
- *   not in comes back as.
+ *   not in comes back as. In a browser it also throws when the handle no longer resolves, which
+ *   is what a reload since the speech looks like.
  */
 export async function shareRecording(
   client: SupabaseClient,
   sessionId: string,
   teamId: string,
-  wavPath: string,
+  handle: string,
 ): Promise<string> {
   await ensureSignedIn(client)
-  const encoded = await prepareRecording(wavPath)
-  const bytes = await readRecordingBytes(encoded.opusPath)
-  const objectKey = recordingObjectKey(teamId, sessionId)
+  const encoded = await prepareRecording(handle)
+  const read = await readRecordingBytes(encoded.opusPath)
+  const bytes = read.bytes
+  // The extension comes from what was actually produced, not from a constant: the desktop always
+  // writes Opus, a browser writes WebM or — on Safari before 18.4 — MP4.
+  const objectKey = recordingObjectKey(teamId, sessionId, encoded.extension)
 
   await uploadRecording(client, objectKey, bytes)
   // Written only after the upload lands. A session row claiming a recording that is not in the

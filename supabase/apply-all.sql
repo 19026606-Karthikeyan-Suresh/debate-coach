@@ -1,7 +1,7 @@
 -- Debate Coach — the whole team-layer schema, in one paste.
 --
 -- GENERATED. Do not edit: change a file in supabase/migrations/ and regenerate, which
--- `npx vitest run src/sync` will otherwise fail on. This is the 6 migrations concatenated
+-- `npx vitest run src/sync` will otherwise fail on. This is the 8 migrations concatenated
 -- in filename order and is exactly equivalent to applying them one at a time; the split exists
 -- only so `supabase db push` can track them.
 --
@@ -992,3 +992,235 @@ drop policy if exists realtime_case_room_write on realtime.messages;
 create policy realtime_case_room_write on realtime.messages
     for insert to authenticated
     with check (public.can_join_case_room(realtime.topic()));
+
+-- ==========================================================================
+-- 20260814000700_web_storage.sql
+-- ==========================================================================
+
+-- What the browser shell needs that the desktop kept locally.
+--
+-- On the desktop, SQLite is the source of truth and Supabase is a replication target, so two
+-- kinds of row never had to leave: a speech's full report, and the debater's delivery rewrites.
+-- In a browser there is no local database to be the truth, so both need a home here — and both
+-- need a policy narrower than the one on the table they hang off.
+
+-- ---------------------------------------------------------------------------
+-- Speech reports
+-- ---------------------------------------------------------------------------
+
+-- **Deliberately its own table rather than a column on `sessions`.**
+--
+-- `sessions_select` is team-visible on purpose: teammates see each other's numbers, and that is
+-- what makes the history screen a squad tool. But `metrics` is a dozen numbers and `report` is
+-- the transcript, every clause the debater failed to say, and every filler they used. Phase 6
+-- split those two by what leaves the machine; adding a `report` column to `sessions` would undo
+-- that split silently, by inheriting a policy written for the numbers.
+--
+-- So the report gets a table whose policy resolves to the *owner* of the session and stops there.
+create table if not exists public.session_reports (
+    session_id  uuid primary key references public.sessions(id) on delete cascade,
+    report      jsonb not null,
+    created_at  timestamptz not null default now()
+);
+
+alter table public.session_reports enable row level security;
+
+-- Supabase grants `authenticated` everything on a new table in `public`, so the revoke comes
+-- first. Without it the grant below is decoration and the table is readable by every signed-in
+-- identity that guesses a session id.
+revoke all on public.session_reports from anon, authenticated;
+grant select, insert, update, delete on public.session_reports to authenticated;
+
+-- The subquery reads `sessions`, whose own RLS applies to it — which is safe in this direction.
+-- RLS on the inner table can only ever *narrow* what the subquery sees, and narrowing cannot
+-- grant. The `user_id` check is what makes this owner-only: `exists (select 1 from sessions
+-- where id = session_id)` alone would be true for a teammate, because a teammate may read the
+-- session row. That is the right rule for `comments` and the wrong one here.
+drop policy if exists session_reports_select on public.session_reports;
+create policy session_reports_select on public.session_reports
+    for select to authenticated
+    using (
+        exists (
+            select 1 from public.sessions
+            where sessions.id = session_reports.session_id
+              and sessions.user_id = (select auth.uid())
+        )
+    );
+
+drop policy if exists session_reports_insert on public.session_reports;
+create policy session_reports_insert on public.session_reports
+    for insert to authenticated
+    with check (
+        exists (
+            select 1 from public.sessions
+            where sessions.id = session_reports.session_id
+              and sessions.user_id = (select auth.uid())
+        )
+    );
+
+-- A report is written twice for one speech — the live pass the moment the speaker sits down, and
+-- the accurate one when the re-transcription lands — so the update policy is not optional.
+drop policy if exists session_reports_update on public.session_reports;
+create policy session_reports_update on public.session_reports
+    for update to authenticated
+    using (
+        exists (
+            select 1 from public.sessions
+            where sessions.id = session_reports.session_id
+              and sessions.user_id = (select auth.uid())
+        )
+    )
+    with check (
+        exists (
+            select 1 from public.sessions
+            where sessions.id = session_reports.session_id
+              and sessions.user_id = (select auth.uid())
+        )
+    );
+
+drop policy if exists session_reports_delete on public.session_reports;
+create policy session_reports_delete on public.session_reports
+    for delete to authenticated
+    using (
+        exists (
+            select 1 from public.sessions
+            where sessions.id = session_reports.session_id
+              and sessions.user_id = (select auth.uid())
+        )
+    );
+
+-- ---------------------------------------------------------------------------
+-- Delivery rewrites
+-- ---------------------------------------------------------------------------
+
+-- Mirrors the local `script_edits` table in `src-tauri/src/db.rs`, and for the same reason it is
+-- a table rather than a blob on the case: a compiled script is *derived* and is rebuilt from the
+-- case on every keystroke, so anything written into the case would be gone by the next debounce.
+-- These are the debater's own words and outlive every recompile.
+--
+-- Empty `text` is meaningful and must not be confused with an absent row: it is the debater
+-- saying "do not deliver this segment at all".
+create table if not exists public.script_edits (
+    case_id     uuid not null references public.cases(id) on delete cascade,
+    segment_id  text not null,
+    text        text not null,
+    updated_at  timestamptz not null default now(),
+    primary key (case_id, segment_id)
+);
+
+alter table public.script_edits enable row level security;
+
+revoke all on public.script_edits from anon, authenticated;
+grant select, insert, update, delete on public.script_edits to authenticated;
+
+-- Owner-only, matching `cases_update` rather than `cases_select`. A teammate may *read* a shared
+-- case and take a copy of it, but how somebody else intends to say their own words out loud is
+-- not part of what sharing a case offers — and a rewrite is addressed by a segment id derived
+-- from the case, so it would apply cleanly to their copy and silently change it.
+drop policy if exists script_edits_all on public.script_edits;
+create policy script_edits_all on public.script_edits
+    for all to authenticated
+    using (
+        exists (
+            select 1 from public.cases
+            where cases.id = script_edits.case_id
+              and cases.owner_id = (select auth.uid())
+        )
+    )
+    with check (
+        exists (
+            select 1 from public.cases
+            where cases.id = script_edits.case_id
+              and cases.owner_id = (select auth.uid())
+        )
+    );
+
+-- ==========================================================================
+-- 20260814000800_coach_usage.sql
+-- ==========================================================================
+
+-- What stands between the Anthropic key and a bill.
+--
+-- On the desktop the key sits in the Rust process and the only caller is the person at the
+-- keyboard. On the web it sits in a serverless function behind a public URL, and anonymous
+-- sign-up is unlimited by design — so "verify the caller" is necessary and nowhere near
+-- sufficient. Anyone can mint an identity; what they cannot do is mint an unlimited number of
+-- coaching calls under one.
+--
+-- A daily counter per `auth.uid()`, claimed atomically before the request goes out.
+
+create table if not exists public.coach_usage (
+    user_id     uuid not null references auth.users(id) on delete cascade,
+    -- UTC rather than the caller's day. A client-supplied date is a client-supplied reset button.
+    usage_date  date not null default ((now() at time zone 'utc')::date),
+    calls       integer not null default 0 check (calls >= 0),
+    updated_at  timestamptz not null default now(),
+    primary key (user_id, usage_date)
+);
+
+alter table public.coach_usage enable row level security;
+
+-- Read-only to the caller, and not writable at all. Supabase grants `authenticated` everything on
+-- a new table in `public`, so the revoke comes first — without it the cap is a number the person
+-- being capped may edit. `claim_coach_call` below is the only writer, and it is SECURITY DEFINER
+-- precisely so the grant can stay withheld.
+revoke all on public.coach_usage from anon, authenticated;
+grant select on public.coach_usage to authenticated;
+
+drop policy if exists coach_usage_select on public.coach_usage;
+create policy coach_usage_select on public.coach_usage
+    for select to authenticated
+    using (user_id = (select auth.uid()));
+
+-- Claims one coaching call against today's allowance.
+--
+-- SECURITY DEFINER with an empty `search_path` and fully-qualified names, which is the phase 9
+-- rule rather than a flourish: a definer function that resolves an unqualified name through the
+-- caller's `search_path` runs whatever the caller put there.
+--
+-- The whole check-and-increment is one statement. Two calls arriving together must not both read
+-- the same count and both decide they are under the cap — `on conflict do update` makes the read
+-- and the write a single atomic row operation, and the `where` clause is what refuses rather than
+-- a branch around it.
+create or replace function public.claim_coach_call(daily_limit integer)
+returns table (allowed boolean, calls integer, limit_per_day integer)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    caller uuid := (select auth.uid());
+    today date := ((now() at time zone 'utc')::date);
+    claimed integer;
+begin
+    if caller is null then
+        raise exception 'not signed in';
+    end if;
+    if daily_limit is null or daily_limit < 1 then
+        raise exception 'daily_limit must be at least 1';
+    end if;
+
+    insert into public.coach_usage as usage (user_id, usage_date, calls, updated_at)
+    values (caller, today, 1, now())
+    on conflict (user_id, usage_date) do update
+        set calls = usage.calls + 1, updated_at = now()
+        where usage.calls < daily_limit
+    returning usage.calls into claimed;
+
+    if claimed is null then
+        -- The `where` refused the update, so no row came back. The caller is at the cap; report
+        -- the count they already have rather than a bare denial, so the panel can say how many.
+        return query
+            select false,
+                   coalesce((select usage.calls from public.coach_usage as usage
+                             where usage.user_id = caller and usage.usage_date = today), 0),
+                   daily_limit;
+        return;
+    end if;
+
+    return query select true, claimed, daily_limit;
+end;
+$$;
+
+revoke all on function public.claim_coach_call(integer) from public, anon;
+grant execute on function public.claim_coach_call(integer) to authenticated;

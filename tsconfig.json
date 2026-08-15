@@ -8,6 +8,15 @@
 
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
+
+    // The `@platform` alias, mirrored from vite.config.ts. It points at the desktop shell and
+    // stays there: `include` below covers both implementation directories either way, and each
+    // one is annotated against `src/platform/types.ts`, so conformance does not depend on which
+    // way this points. A second tsconfig aimed at the web shell would check the same files twice.
+    "paths": {
+      "@platform": ["./src/platform/tauri/index.ts"]
+    },
+
     "resolveJsonModule": true,
     "isolatedModules": true,
     "moduleDetection": "force",
@@ -23,5 +32,7 @@
 
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src", "vite.config.ts", "eslint.config.js"]
+  // `api` is the Vercel function, outside the bundle but not outside the typecheck — it imports
+  // the wire shape from `src/coach/` and would otherwise drift from it silently.
+  "include": ["src", "api", "vite.config.ts", "eslint.config.js"]
 }

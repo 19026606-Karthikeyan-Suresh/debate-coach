@@ -33,7 +33,12 @@ import {
 } from '../collab/session.ts'
 import { identityOf } from '../collab/shape.ts'
 import type { Case } from '../types/case.ts'
-import { createLanLink, createRealtimeLink, findOrHostLanRoom } from '../sync/provider.ts'
+import {
+  createLanLink,
+  createRealtimeLink,
+  findOrHostLanRoom,
+  hasLanTransport,
+} from '../sync/provider.ts'
 import { readRoomLink, readSetting, SETTING_KEYS } from '../sync/store.ts'
 import { ensureSignedIn, fetchDocState, getSupabase, pushDocState } from '../sync/supabase.ts'
 
@@ -47,6 +52,13 @@ export type RoomRole = 'host' | 'guest'
 export interface CoPrep {
   /** False on a build with no Supabase project *and* no Tauri shell — nothing to run a room on. */
   readonly canStart: boolean
+  /**
+   * Whether `start('lan')` is worth offering.
+   *
+   * Straight through from the platform, because the panel is the only thing that can act on it:
+   * a browser has no sockets to bind, so a LAN button there is a button that always fails.
+   */
+  readonly hasLanTransport: boolean
   readonly status: CollabStatus
   /** Null until a room has been started. */
   readonly transport: CollabTransport | null
@@ -341,7 +353,8 @@ export function useCoPrep(
   }, [])
 
   return {
-    canStart: getSupabase() !== null || hasTauriShell(),
+    canStart: getSupabase() !== null || hasLanTransport,
+    hasLanTransport,
     status,
     transport,
     roomId,
@@ -354,11 +367,6 @@ export function useCoPrep(
     update: roomUpdate,
     setFieldPath,
   }
-}
-
-/** Whether the Tauri IPC exists, which is what the LAN transport needs. */
-function hasTauriShell(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
 /** Stands in for `auth.uid()` on a build with no project. One per launch, which is enough. */

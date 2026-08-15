@@ -10,15 +10,29 @@ import { useCallback, useEffect, useState } from 'react'
 
 import type { FormatId } from '../formats/index.ts'
 import { FORMATS, getFormat } from '../formats/index.ts'
-import { deleteCase, listCaseIds, listCases, saveCase, type CaseSummary } from '../db/index.ts'
+import {
+  deleteCase,
+  listCaseIds,
+  listCases,
+  requiresIdentity,
+  saveCase,
+  type CaseSummary,
+} from '../db/index.ts'
 import { importCaseFile } from '../export/index.ts'
+import type { IdentitySession } from '../hooks/useIdentity.ts'
 import { useSync } from '../hooks/useSync.ts'
 import { createEmptyCase } from '../types/createCase.ts'
 import { TeamLibrary } from './TeamLibrary.tsx'
+import { IdentityPanel } from './IdentityPanel.tsx'
 import { TeamSetup } from './TeamSetup.tsx'
 
 /** Props for {@link Library}. */
 export interface LibraryProps {
+  /**
+   * The identity, already resolved — the screen is not rendered until it is. Passed down rather
+   * than read again here, because "check your inbox" is state and two copies of it disagree.
+   */
+  readonly identity: IdentitySession
   /** Opens a case in the editor. */
   readonly onOpen: (caseId: string) => void
   /** Opens the session history. */
@@ -29,11 +43,15 @@ export interface LibraryProps {
  * Renders the local case list.
  *
  * @param props - See {@link LibraryProps}.
+ * @param props.identity - From `useIdentity`, owned by the app root.
  * @param props.onOpen - Called with the id of the case to open.
  * @param props.onReview - Called to open the Review screen.
  * @returns The library screen.
  */
-export function Library({ onOpen, onReview }: LibraryProps): React.JSX.Element {
+export function Library({ identity, onOpen, onReview }: LibraryProps): React.JSX.Element {
+  // Whether the cases in this list are on this machine, which is the only thing the subtitle
+  // below is actually about.
+  const isLocalFirst = !requiresIdentity
   const [cases, setCases] = useState<CaseSummary[]>([])
   const [error, setError] = useState<string | null>(null)
   // What the last import did. Which of the two outcomes it was is the whole point of saying so:
@@ -123,16 +141,25 @@ export function Library({ onOpen, onReview }: LibraryProps): React.JSX.Element {
   )
 
   return (
-    <main className="mx-auto flex h-full max-w-3xl flex-col gap-6 overflow-y-auto p-8">
+    <main className="mx-auto flex h-full max-w-3xl flex-col gap-6 overflow-y-auto overscroll-contain p-4 sm:p-8">
       <header className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Debate Coach</h1>
           <p className="text-sm text-neutral-500 dark:text-neutral-400">
             {/* Was "nothing leaves it yet" until phase 9, and saying that once it is no longer
-                true is worse than saying nothing. */}
-            {sync.activeTeamId === null
-              ? 'Cases are stored on this machine. Nothing leaves it.'
-              : 'Stored on this machine, and shared with your team when you mark a case shared.'}
+                true is worse than saying nothing — which is why this reads the shell rather than
+                repeating the desktop's sentence in a browser, where nothing is on this machine
+                at all. `requiresIdentity` is that same fact from the other end: an account is
+                needed exactly where the cases are not here. */}
+            {isLocalFirst ? (
+              sync.activeTeamId === null
+                ? 'Cases are stored on this machine. Nothing leaves it.'
+                : 'Stored on this machine, and shared with your team when you mark a case shared.'
+            ) : sync.activeTeamId === null ? (
+              'Cases are saved to your account, so they follow you to any browser you sign in from. Nothing is shared until you say so.'
+            ) : (
+              'Saved to your account, and shared with your team when you mark a case shared.'
+            )}
           </p>
         </div>
         <button type="button" className="btn" onClick={onReview}>
@@ -208,6 +235,8 @@ export function Library({ onOpen, onReview }: LibraryProps): React.JSX.Element {
           {error}
         </p>
       )}
+
+      <IdentityPanel identity={identity} />
 
       <TeamSetup sync={sync} />
 

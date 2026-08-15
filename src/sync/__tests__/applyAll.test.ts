@@ -73,8 +73,11 @@ describe('apply-all.sql', () => {
     )
     expect(tables.rows.map((row) => row.tablename)).toEqual([
       'cases',
+      'coach_usage',
       'comments',
       'motions',
+      'script_edits',
+      'session_reports',
       'sessions',
       'team_members',
       'teams',

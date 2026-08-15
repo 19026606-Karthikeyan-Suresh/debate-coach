@@ -1,0 +1,51 @@
+# What does NOT get uploaded to a Vercel build.
+#
+# **This file replaces `.gitignore` for uploads, it does not add to it.** Vercel falls back to
+# `.gitignore` only when there is no `.vercelignore`, so every dangerous entry from there has to
+# be repeated here — `.env` above all. Uploading it would let the build read Supabase values that
+# were never configured in the project (hiding a missing setting until the day somebody rotates
+# them) and would carry any ANTHROPIC_API_KEY line straight into the build environment.
+
+# Secrets and per-machine values. The Anthropic key belongs in the project's environment
+# variables, never in an uploaded file.
+.env
+.env.*
+!.env.example
+
+# The desktop shell. None of it is reachable from the web build — the `@platform` alias resolves
+# to `src/platform/web/` under `--mode web` — and `target/` alone reaches several gigabytes.
+src-tauri/
+
+# Installed rather than uploaded.
+node_modules/
+
+# Built on Vercel, not shipped to it.
+dist/
+dist-ssr/
+.vite/
+
+# Python tooling for the whisper benchmark. Desktop-only and unused by the web build.
+.venv/
+__pycache__/
+*.pyc
+
+# The source template and the filled example. Read by tests, never by the app at runtime — the
+# field labels they pin were copied into `src/types/` in phase 1.
+reference/
+
+# SQL applied by hand or by the Supabase CLI, never by the deployment.
+supabase/
+
+# Local recordings and model weights, in case either is sitting in the tree.
+recordings/
+*.wav
+*.opus
+*.bin
+
+# Editor and OS noise.
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

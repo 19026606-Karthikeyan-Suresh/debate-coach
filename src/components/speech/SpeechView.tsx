@@ -29,6 +29,7 @@ import type { CompiledScript } from '../../script/types.ts'
 import type { SpeechLimits } from '../../speech/timer.ts'
 import { buildSpeechLimits, scriptHeadroom } from '../../speech/timer.ts'
 import type { Case } from '../../types/case.ts'
+import { Drawer } from '../Drawer.tsx'
 import { MotionBar } from '../MotionBar.tsx'
 import { LiveTranscript } from './LiveTranscript.tsx'
 import { ScriptEditor } from './ScriptEditor.tsx'
@@ -166,6 +167,14 @@ function SpeechStage({
   // inside the one thing on this screen that must stay exact.
   const [isEditingScript, setIsEditingScript] = useState(false)
 
+  // Below `lg` the rail becomes a slide-over, but the clock and Record do not go in it — they move
+  // to an action bar under the teleprompter. Everything else is reference material you read
+  // between speeches, not during one.
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false)
+  const closeDetails = useCallback(() => {
+    setIsDetailsOpen(false)
+  }, [])
+
   const isLive = session.status === 'recording' || session.status === 'stopping'
   const headroom = scriptHeadroom(script.estimatedSeconds, limits)
 
@@ -261,73 +270,50 @@ function SpeechStage({
 
   const canShowReport = review.report !== null
 
-  return (
-    <div className="grid h-full grid-cols-[1fr_20rem] overflow-hidden">
-      {/* The bar is a row of this column, deliberately *outside* the scroller below it. The
-          teleprompter drives its own `scrollIntoView({ block: 'center' })`, and a sticky bar
-          overlaying the top of that container is a thing that can cover the line being read.
-          Out here it structurally cannot — which beats measuring whether it does. */}
-      <div className="flex min-h-0 flex-col">
-        <MotionBar motion={caseFile.prep.motion} placement="block" />
-        <main className="relative flex-1 overflow-y-auto">
-        {canShowReport && !isShowingScript && review.report ? (
-          <SpeechReport
-            report={review.report}
-            isReviewing={review.status === 'reviewing'}
-            error={review.error}
-            onSaveToField={saveToField}
-          />
-        ) : isEditingScript ? (
-          <ScriptEditor
-            compiled={compiled}
-            delivered={script}
-            edits={edits}
-            onWrite={onWriteEdit}
-            onRevert={onRevertEdit}
-            error={editsError}
-          />
-        ) : (
-          <Teleprompter script={script} alignment={session.alignment} isLive={isLive} />
-        )}
-        </main>
-      </div>
+  // The three controls that have to stay reachable while somebody is actually speaking. On a
+  // desktop they head the rail; on a phone they are the action bar, because a Stop button behind
+  // a drawer is a Stop button nobody finds at 7:00.
+  const controls = (
+    <>
+      <button type="button" className="btn" onClick={onClose} disabled={isLive}>
+        ← Prep
+      </button>
+      {/* Disabled while recording: rewriting the script the aligner is currently indexing
+          into would renumber every token underneath it mid-speech. */}
+      <button
+        type="button"
+        className="btn"
+        disabled={isLive}
+        onClick={() => {
+          setIsEditingScript((current) => !current)
+        }}
+      >
+        {isEditingScript ? 'Done' : 'Edit script'}
+      </button>
+      <button
+        type="button"
+        className={`btn flex-1 justify-center ${isLive ? 'btn-danger' : 'btn-primary'}`}
+        onClick={toggle}
+        disabled={session.status === 'starting' || session.status === 'stopping'}
+      >
+        {session.status === 'starting'
+          ? 'Opening mic…'
+          : session.status === 'stopping'
+            ? 'Finishing…'
+            : isLive
+              ? 'Stop'
+              : 'Record'}
+      </button>
+    </>
+  )
 
-      <aside className="flex flex-col gap-5 overflow-y-auto border-l border-neutral-200 p-4 dark:border-neutral-800">
-        <div className="flex gap-1.5">
-          <button type="button" className="btn" onClick={onClose} disabled={isLive}>
-            ← Prep
-          </button>
-          {/* Disabled while recording: rewriting the script the aligner is currently indexing
-              into would renumber every token underneath it mid-speech. */}
-          <button
-            type="button"
-            className="btn"
-            disabled={isLive}
-            onClick={() => {
-              setIsEditingScript((current) => !current)
-            }}
-          >
-            {isEditingScript ? 'Done' : 'Edit script'}
-          </button>
-          <button
-            type="button"
-            className={`btn flex-1 justify-center ${isLive ? 'btn-danger' : 'btn-primary'}`}
-            onClick={toggle}
-            disabled={session.status === 'starting' || session.status === 'stopping'}
-          >
-            {session.status === 'starting'
-              ? 'Opening mic…'
-              : session.status === 'stopping'
-                ? 'Finishing…'
-                : isLive
-                  ? 'Stop'
-                  : 'Record'}
-          </button>
-        </div>
+  const clock = (
+    <SpeechTimer clock={timer.clock} lastSignal={timer.lastSignal} isRunning={timer.isRunning} />
+  )
 
-        <SpeechTimer clock={timer.clock} lastSignal={timer.lastSignal} isRunning={timer.isRunning} />
-
-        {canGiveReply ? (
+  const detailsPane = (
+    <>
+      {canGiveReply ? (
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -424,10 +410,81 @@ function SpeechStage({
           <p className="text-xs text-amber-700 dark:text-amber-400">{review.error}</p>
         ) : null}
 
-        <p className="mt-auto text-xs text-neutral-400 dark:text-neutral-500">
-          Space starts and stops the speech.
-        </p>
-      </aside>
+      <p className="mt-auto text-xs text-neutral-400 dark:text-neutral-500">
+        Space starts and stops the speech.
+      </p>
+    </>
+  )
+
+  return (
+    <div className="grid h-full grid-cols-1 overflow-hidden lg:grid-cols-[1fr_20rem]">
+      {/* The motion bar is a row of this column, deliberately *outside* the scroller below it.
+          The teleprompter drives its own `scrollIntoView({ block: 'center' })`, and a sticky bar
+          overlaying the top of that container is a thing that can cover the line being read.
+          Out here it structurally cannot — which beats measuring whether it does. The action bar
+          below is outside it for the same reason, from the other end. */}
+      <div className="flex min-h-0 flex-col">
+        <MotionBar motion={caseFile.prep.motion} placement="block" />
+        <main className="relative flex-1 overflow-y-auto overscroll-contain">
+          {canShowReport && !isShowingScript && review.report ? (
+            <SpeechReport
+              report={review.report}
+              isReviewing={review.status === 'reviewing'}
+              error={review.error}
+              onSaveToField={saveToField}
+            />
+          ) : isEditingScript ? (
+            <ScriptEditor
+              compiled={compiled}
+              delivered={script}
+              edits={edits}
+              onWrite={onWriteEdit}
+              onRevert={onRevertEdit}
+              error={editsError}
+            />
+          ) : (
+            <Teleprompter script={script} alignment={session.alignment} isLive={isLive} />
+          )}
+        </main>
+
+        {/* The action bar, below `lg` only. The clock and Record do not go in the drawer with
+            everything else: a Stop button behind a slide-over is a Stop button nobody finds at
+            7:00, and the clock is read peripherally or not at all. */}
+        <div className="flex flex-col gap-2 border-t border-neutral-200 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:flex-row sm:items-end lg:hidden dark:border-neutral-800">
+          {/* Stacked on a phone held upright, side by side once the screen is wide — which in
+              practice means the same phone turned on its side, where height is what is scarce.
+              Measured at 812×375: stacked left the teleprompter 48% of the screen, which is the
+              wrong half to lose in the one orientation a teleprompter actually wants. */}
+          <div className="min-w-0 flex-1">{clock}</div>
+          <div className="flex shrink-0 gap-1.5">
+            {controls}
+            <button
+              type="button"
+              className="btn shrink-0"
+              onClick={() => {
+                setIsDetailsOpen(true)
+              }}
+            >
+              Details
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <Drawer
+        isOpen={isDetailsOpen}
+        side="right"
+        columnFrom="lg"
+        title="Speech details"
+        onClose={closeDetails}
+      >
+        {/* At `lg` this pane is the rail, so it carries the controls and the clock as it always
+            did. Below it they are in the action bar above and these copies are hidden, which
+            keeps one of each on screen at every width. */}
+        <div className="hidden gap-1.5 lg:flex">{controls}</div>
+        <div className="hidden lg:block">{clock}</div>
+        {detailsPane}
+      </Drawer>
     </div>
   )
 }

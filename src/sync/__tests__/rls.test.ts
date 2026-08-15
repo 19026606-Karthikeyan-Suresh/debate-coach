@@ -108,8 +108,11 @@ describe('the migrations themselves', () => {
     )
     expect(tables.map((row) => row.tablename)).toEqual([
       'cases',
+      'coach_usage',
       'comments',
       'motions',
+      'script_edits',
+      'session_reports',
       'sessions',
       'team_members',
       'teams',
@@ -856,5 +859,215 @@ describe('rotating the invite code', () => {
       'Carol',
     ])
     expect(joined[0]?.join_team).toBe(northsideId)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Migration 7 — what the browser shell keeps here that the desktop kept locally
+// ---------------------------------------------------------------------------
+
+describe('session reports', () => {
+  it('are readable by the speaker and nobody else, while the numbers stay shared', async () => {
+    await harness.asUser(ALICE)
+    await harness.query(
+      `insert into public.session_reports (session_id, report)
+       values ($1, $2::jsonb)`,
+      [NORTHSIDE_SESSION, JSON.stringify({ version: 1, transcript: 'a thing Alice said' })],
+    )
+
+    const mine = await harness.query<{ report: { transcript: string } }>(
+      'select report from public.session_reports where session_id = $1',
+      [NORTHSIDE_SESSION],
+    )
+    expect(mine[0]?.report.transcript).toBe('a thing Alice said')
+
+    // The pair that makes this a real test rather than half of one. Bob is in Alice's squad, so
+    // he must still see what the history screen is *for* — and must not see the transcript that
+    // produced it.
+    await harness.asUser(BOB)
+    const numbers = await harness.query<{ metrics: { wordsPerMinute: number } }>(
+      'select metrics from public.sessions where id = $1',
+      [NORTHSIDE_SESSION],
+    )
+    expect(numbers[0]?.metrics.wordsPerMinute).toBe(168)
+
+    const transcript = await harness.query('select report from public.session_reports where session_id = $1', [
+      NORTHSIDE_SESSION,
+    ])
+    expect(transcript).toHaveLength(0)
+
+    // And an outsider gets the same nothing, by a different policy.
+    await harness.asUser(CAROL)
+    expect(
+      await harness.query('select report from public.session_reports where session_id = $1', [
+        NORTHSIDE_SESSION,
+      ]),
+    ).toHaveLength(0)
+  })
+
+  it('cannot be written against somebody else\u2019s speech', async () => {
+    await harness.asUser(BOB)
+    const message = await errorFrom(() =>
+      harness.query(
+        'insert into public.session_reports (session_id, report) values ($1, $2::jsonb)',
+        [NORTHSIDE_SESSION, JSON.stringify({ version: 1, transcript: 'not his to write' })],
+      ),
+    )
+    expect(message).toContain('row-level security policy')
+  })
+
+  it('can be rewritten by the speaker, because one speech produces two reports', async () => {
+    // The live pass lands first and the accurate one replaces it in the same row. An update
+    // policy that refused would leave every report on the browser shell stuck at `base.en`.
+    await harness.asUser(ALICE)
+    await harness.query(
+      `insert into public.session_reports (session_id, report) values ($1, $2::jsonb)
+       on conflict (session_id) do update set report = excluded.report`,
+      [NORTHSIDE_SESSION, JSON.stringify({ version: 1, transcript: 'the accurate pass' })],
+    )
+    const after = await harness.query<{ report: { transcript: string } }>(
+      'select report from public.session_reports where session_id = $1',
+      [NORTHSIDE_SESSION],
+    )
+    expect(after[0]?.report.transcript).toBe('the accurate pass')
+  })
+})
+
+describe('script edits', () => {
+  it('stay with their author even on a case the whole squad can read', async () => {
+    await harness.asUser(ALICE)
+    await harness.query(
+      'insert into public.script_edits (case_id, segment_id, text) values ($1, $2, $3)',
+      [NORTHSIDE_CASE, 'seg-1', 'the way Alice wants to say it'],
+    )
+    const mine = await harness.query<{ text: string }>(
+      'select text from public.script_edits where case_id = $1',
+      [NORTHSIDE_CASE],
+    )
+    expect(mine[0]?.text).toBe('the way Alice wants to say it')
+
+    await harness.asUser(BOB)
+    // Sharing still works: Bob reads the case itself, which is the whole point of a team library.
+    const sharedCase = await harness.query<{ motion: string }>(
+      'select motion from public.cases where id = $1',
+      [NORTHSIDE_CASE],
+    )
+    expect(sharedCase[0]?.motion).toBe('THW hold platforms liable')
+
+    // What he does not get is how she means to deliver it.
+    expect(
+      await harness.query('select text from public.script_edits where case_id = $1', [NORTHSIDE_CASE]),
+    ).toHaveLength(0)
+  })
+
+  it('cannot be written onto a teammate\u2019s case', async () => {
+    await harness.asUser(BOB)
+    const message = await errorFrom(() =>
+      harness.query('insert into public.script_edits (case_id, segment_id, text) values ($1, $2, $3)', [
+        NORTHSIDE_CASE,
+        'seg-2',
+        'words Bob put in her mouth',
+      ]),
+    )
+    expect(message).toContain('row-level security policy')
+  })
+
+  it('store an empty rewrite rather than treating it as no rewrite', async () => {
+    // Empty text means "do not deliver this segment at all", which is a different instruction
+    // from having no row. A column that rejected it would silently restore the compiled line.
+    await harness.asUser(ALICE)
+    await harness.query(
+      'insert into public.script_edits (case_id, segment_id, text) values ($1, $2, $3)',
+      [NORTHSIDE_CASE, 'seg-silent', ''],
+    )
+    const rows = await harness.query<{ text: string }>(
+      'select text from public.script_edits where case_id = $1 and segment_id = $2',
+      [NORTHSIDE_CASE, 'seg-silent'],
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.text).toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Migration 8 — what stands between the Anthropic key and a bill
+// ---------------------------------------------------------------------------
+
+describe('the coaching daily cap', () => {
+  it('counts a caller\u2019s own calls and refuses past the limit', async () => {
+    await harness.asUser(BOB)
+    const first = await harness.query<{ allowed: boolean; calls: number }>(
+      'select * from public.claim_coach_call($1)',
+      [2],
+    )
+    expect(first[0]?.allowed).toBe(true)
+    expect(first[0]?.calls).toBe(1)
+
+    const second = await harness.query<{ allowed: boolean; calls: number }>(
+      'select * from public.claim_coach_call($1)',
+      [2],
+    )
+    expect(second[0]?.allowed).toBe(true)
+    expect(second[0]?.calls).toBe(2)
+
+    // At the cap. The refusal still reports the count, so the panel can say how many rather than
+    // only that there were too many.
+    const third = await harness.query<{ allowed: boolean; calls: number; limit_per_day: number }>(
+      'select * from public.claim_coach_call($1)',
+      [2],
+    )
+    expect(third[0]?.allowed).toBe(false)
+    expect(third[0]?.calls).toBe(2)
+    expect(third[0]?.limit_per_day).toBe(2)
+  })
+
+  it('is per identity, and readable only by the identity it counts', async () => {
+    // Bob has a row from the test above. Alice's own claim must be counted separately — a shared
+    // counter would let one debater exhaust the squad's allowance.
+    await harness.asUser(ALICE)
+    const mine = await harness.query<{ allowed: boolean; calls: number }>(
+      'select * from public.claim_coach_call($1)',
+      [50],
+    )
+    expect(mine[0]?.calls).toBe(1)
+
+    // The permitted read: Alice sees her own usage.
+    const own = await harness.query<{ calls: number }>('select calls from public.coach_usage')
+    expect(own).toHaveLength(1)
+    expect(own[0]?.calls).toBe(1)
+
+    // And not Bob's, even though he is a teammate.
+    const others = await harness.query<{ calls: number }>(
+      'select calls from public.coach_usage where user_id = $1',
+      [BOB],
+    )
+    expect(others).toHaveLength(0)
+  })
+
+  it('cannot be edited by the person being counted', async () => {
+    // The whole point. A cap the capped party may rewrite is not a cap — the grant is withheld,
+    // so this is a permission error rather than a policy refusal.
+    await harness.asUser(BOB)
+    const update = await errorFrom(() =>
+      harness.query('update public.coach_usage set calls = 0 where user_id = $1', [BOB]),
+    )
+    expect(update).toContain('permission denied')
+
+    const insert = await errorFrom(() =>
+      harness.query(
+        'insert into public.coach_usage (user_id, calls) values ($1, 0)',
+        [BOB],
+      ),
+    )
+    expect(insert).toContain('permission denied')
+  })
+
+  it('refuses a caller who is not signed in', async () => {
+    await harness.asUser(null)
+    const message = await errorFrom(() =>
+      harness.query('select * from public.claim_coach_call($1)', [50]),
+    )
+    // `anon` has no execute grant, so it does not get as far as the not-signed-in check.
+    expect(message).toContain('permission denied')
   })
 })

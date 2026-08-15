@@ -10,6 +10,12 @@
  *     beats reporting a channel error nobody can act on.
  *   * **Which wire it is on, always.** Realtime and the LAN relay fail in completely different
  *     ways, and "it stopped updating" is unanswerable without knowing which one is carrying it.
+ *
+ * A browser has one wire rather than two — no sockets to bind, so no relay — and the panel drops
+ * the second button rather than offering one that always fails. The visibility explanation changes
+ * with it: on the desktop a private case still has the local-network room as a way in, and in a
+ * browser it has none, so promising one there sends somebody looking for a button that is not
+ * present.
  */
 
 import type { CollabPeer } from '../collab/presence.ts'
@@ -102,26 +108,36 @@ export function CoPrepPanel({
                 void coPrep.start('realtime')
               }}
             >
-              Online
+              {coPrep.hasLanTransport ? 'Online' : 'Start a room'}
             </button>
-            <button
-              type="button"
-              className="btn flex-1 justify-center"
-              disabled={coPrep.isBusy}
-              onClick={() => {
-                void coPrep.start('lan')
-              }}
-            >
-              This network
-            </button>
+            {coPrep.hasLanTransport && (
+              <button
+                type="button"
+                className="btn flex-1 justify-center"
+                disabled={coPrep.isBusy}
+                onClick={() => {
+                  void coPrep.start('lan')
+                }}
+              >
+                This network
+              </button>
+            )}
           </div>
-          {needsSharing && (
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
-              An online room is open to the teammates who can read the case, so this one has to be
-              shared with your team first. A local-network room does not — it is whoever is in the
-              room with you.
-            </p>
-          )}
+          {needsSharing &&
+            (coPrep.hasLanTransport ? (
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                An online room is open to the teammates who can read the case, so this one has to be
+                shared with your team first. A local-network room does not — it is whoever is in the
+                room with you.
+              </p>
+            ) : (
+              // Same constraint, minus the escape hatch: pointing a browser at a local-network
+              // room it cannot open is worse than saying there is one way in.
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                A room is open to the teammates who can read the case, so this one has to be shared
+                with your team first.
+              </p>
+            ))}
         </>
       )}
 

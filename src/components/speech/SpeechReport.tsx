@@ -166,7 +166,7 @@ export function SpeechReport({
   const skippedSections = report.sections.filter((section) => section.skippedWords > 0)
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-6 p-6">
+    <div className="mx-auto flex max-w-3xl flex-col gap-6 p-4 sm:p-6">
       <header className="flex flex-col gap-1">
         <h2 className="text-lg font-semibold">{report.motion.trim() || 'Untitled case'}</h2>
         <p className="text-sm text-neutral-500 dark:text-neutral-400">

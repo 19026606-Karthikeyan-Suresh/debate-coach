@@ -29,7 +29,7 @@ import type { Pause, SessionMetrics, SpeechTimeline } from './metrics.ts'
 import { secondsAtWord, summariseSession, wordAtOffset } from './metrics.ts'
 import type { PacePoint } from './metrics.ts'
 import { pacePoints } from './metrics.ts'
-import type { TranscriptionSourceId } from './recognition.ts'
+import type { TranscriptionSourceId } from './source.ts'
 
 /** A run of script words that were not said. */
 export interface SkippedRun {
