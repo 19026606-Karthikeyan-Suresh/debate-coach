@@ -185,11 +185,21 @@ export async function readIdentity(client: SupabaseClient): Promise<Identity | n
  * @param client - A configured client, already signed in.
  * @param email - Where to send the confirmation. Unconfirmed until the link is clicked, so the
  *   caller must say "check your inbox" rather than "done".
+ * @param redirectTo - Where the link should land. Omit on a shell with no address bar. Passing an
+ *   origin the project's redirect allow-list does not contain does not fail here — the link is
+ *   sent and then refuses on arrival, which is the confusing way round.
  * @throws If the address is already attached to another identity, or the project has email
  *   sign-in switched off. Both come back as the project's own message.
  */
-export async function linkEmail(client: SupabaseClient, email: string): Promise<void> {
-  const updated = await client.auth.updateUser({ email })
+export async function linkEmail(
+  client: SupabaseClient,
+  email: string,
+  redirectTo?: string,
+): Promise<void> {
+  const updated = await client.auth.updateUser(
+    { email },
+    redirectTo === undefined ? {} : { emailRedirectTo: redirectTo },
+  )
   if (updated.error) {
     fail('could not add that email', updated.error.message)
   }
@@ -232,10 +242,21 @@ export function describeSignInRisk(ownedCases: number | null): string {
  *
  * @param client - A configured client.
  * @param email - The linked address.
+ * @param redirectTo - Where the link should land. Omit on a shell with no address bar.
  * @throws If the project refuses, including when no identity has that address.
  */
-export async function signInWithEmail(client: SupabaseClient, email: string): Promise<void> {
-  const sent = await client.auth.signInWithOtp({ email, options: { shouldCreateUser: false } })
+export async function signInWithEmail(
+  client: SupabaseClient,
+  email: string,
+  redirectTo?: string,
+): Promise<void> {
+  const sent = await client.auth.signInWithOtp({
+    email,
+    options:
+      redirectTo === undefined
+        ? { shouldCreateUser: false }
+        : { shouldCreateUser: false, emailRedirectTo: redirectTo },
+  })
   if (sent.error) {
     fail('could not send a sign-in link', sent.error.message)
   }

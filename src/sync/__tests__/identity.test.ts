@@ -75,8 +75,10 @@ function fakeClient(options: {
         stored = created
         return { data: { user: created }, error: null }
       },
-      updateUser: async (attributes: unknown) => {
-        counts.updateUserArgs = attributes
+      updateUser: async (attributes: unknown, options: unknown) => {
+        // Both arguments, because the redirect is the second one and a call that forgets it is
+        // indistinguishable from a correct one if only the first is recorded.
+        counts.updateUserArgs = [attributes, options]
         await Promise.resolve()
         return { data: {}, error: null }
       },
@@ -205,7 +207,43 @@ describe('the email door', () => {
 
     // `updateUser` and not `signUp`: the uid has to survive, or every case this browser owns
     // stops being readable by the person who wrote it.
-    expect(fake.counts.updateUserArgs).toEqual({ email: 'debater@example.com' })
+    expect(fake.counts.updateUserArgs).toEqual([{ email: 'debater@example.com' }, {}])
+  })
+
+  it('sends the link back to the origin that asked for it', async () => {
+    const fake = fakeClient({ startsSignedIn: true })
+    await linkEmail(fake.client, 'debater@example.com', 'https://preview-abc.vercel.app')
+
+    // Without this the link goes to the project's Site URL, so every preview deployment and every
+    // dev server confirms somebody onto production instead of onto itself.
+    expect(fake.counts.updateUserArgs).toEqual([
+      { email: 'debater@example.com' },
+      { emailRedirectTo: 'https://preview-abc.vercel.app' },
+    ])
+  })
+
+  it('omits the redirect rather than passing undefined', async () => {
+    const fake = fakeClient()
+    await signInWithEmail(fake.client, 'debater@example.com')
+
+    // `exactOptionalPropertyTypes` is on, and supabase-js reads the key rather than its value —
+    // an explicit `emailRedirectTo: undefined` is not the same as not asking.
+    expect(fake.counts.otpArgs).toEqual({
+      email: 'debater@example.com',
+      options: { shouldCreateUser: false },
+    })
+    expect(Object.hasOwn((fake.counts.otpArgs as { options: object }).options, 'emailRedirectTo'))
+      .toBe(false)
+  })
+
+  it('carries the redirect into the sign-in link too', async () => {
+    const fake = fakeClient()
+    await signInWithEmail(fake.client, 'debater@example.com', 'http://localhost:1420')
+
+    expect(fake.counts.otpArgs).toEqual({
+      email: 'debater@example.com',
+      options: { shouldCreateUser: false, emailRedirectTo: 'http://localhost:1420' },
+    })
   })
 
   it('refuses to create a user when signing back in', async () => {

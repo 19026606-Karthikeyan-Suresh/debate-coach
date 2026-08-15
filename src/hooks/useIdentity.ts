@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
+import { auth } from '@platform'
 import { requiresIdentity } from '../db/index.ts'
 import {
   ensureSignedIn,
@@ -66,6 +67,22 @@ export interface IdentitySession {
 /** Reads a thrown value as a sentence. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Where an emailed link should land.
+ *
+ * The origin this tab is actually on, not a constant — a preview deployment and a dev server have
+ * to get their own link back, or every one of them sends the debater to production. Undefined
+ * where the shell has no address bar to receive a callback in, which `detectSessionInUrl` already
+ * states; Supabase then falls back to the project's Site URL, which is right for that case.
+ *
+ * The origin must be on the project's redirect allow-list. One that is not still *sends* the
+ * link — it is refused on arrival, which is the confusing way round and is why the allow-list is
+ * step one of the deploy runbook rather than a footnote.
+ */
+function authRedirectTarget(): string | undefined {
+  return auth.detectSessionInUrl ? window.location.origin : undefined
 }
 
 /**
@@ -175,7 +192,7 @@ export function useIdentity(): IdentitySession {
       }
       const sent = await runEmailCall(
         async () => {
-          await linkRemoteEmail(client, email)
+          await linkRemoteEmail(client, email, authRedirectTarget())
         },
         `Confirm it from the link sent to ${email}. Nothing changes until you do — this is still the same account either way.`,
       )
@@ -195,7 +212,7 @@ export function useIdentity(): IdentitySession {
         ? false
         : await runEmailCall(
             async () => {
-              await signInWithEmail(client, email)
+              await signInWithEmail(client, email, authRedirectTarget())
             },
             `A sign-in link is on its way to ${email}. Open it in this browser.`,
           ),
